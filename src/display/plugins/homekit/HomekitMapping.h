@@ -120,6 +120,33 @@ bool isPowerOnRequest(int targetHeatingCooling);
 int resolveRequestedMode(const HomekitCommand &command, int currentMode);
 
 /**
+ * Controller calls needed to move from one machine mode to another, mirroring the display UI:
+ * standby is entered with activateStandby(), waking goes through deactivateStandby() (which lands
+ * in brew), and any other awake mode is then selected with setMode().
+ *
+ * Example:
+ *   ModeTransition transition = planModeTransition(MACHINE_MODE_STEAM, MACHINE_MODE_BREW);
+ *   // transition.shouldSetMode == true, transition.shouldWake == false
+ */
+struct ModeTransition {
+    bool shouldEnterStandby = false;
+    bool shouldWake = false;
+    bool shouldSetMode = false;
+};
+
+/**
+ * Plans the Controller calls for a mode change requested from HomeKit.
+ *
+ * @param currentMode the machine's current MODE_* value
+ * @param requestedMode the MODE_* value to switch to
+ * @return which of activateStandby(), deactivateStandby() and setMode(requestedMode) to call,
+ *         in that order; all false when the modes are equal
+ *
+ * Example: planModeTransition(MACHINE_MODE_STANDBY, MACHINE_MODE_STEAM) wakes, then sets steam.
+ */
+ModeTransition planModeTransition(int currentMode, int requestedMode);
+
+/**
  * Characteristic values that reflect the given machine mode. Grind mode shows the thermostat as
  * on with no mode switch active, since grinding is not controllable from HomeKit.
  *

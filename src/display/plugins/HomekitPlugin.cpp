@@ -101,6 +101,8 @@ void HomekitThermostat::loop() {
 HomekitModeSwitch::HomekitModeSwitch(HomekitSharedState &sharedState, int mode, const char *name)
     : sharedState(sharedState), mode(mode) {
     new Characteristic::Name(name);
+    // iOS 16+ ignores Name on secondary services and shows the accessory name instead.
+    new Characteristic::ConfiguredName(name);
     isOn = new Characteristic::On();
 }
 
@@ -196,15 +198,13 @@ void HomekitPlugin::applyCommand(const homekit::HomekitCommand &command) {
 
     if (requestedMode != currentMode) {
         ESP_LOGI(LOG_TAG, "Changing mode from %d to %d", currentMode, requestedMode);
-        // Same sequence as the display UI: wake into brew first, then switch modes.
-        if (requestedMode == MODE_STANDBY) {
+        const homekit::ModeTransition transition = homekit::planModeTransition(currentMode, requestedMode);
+        if (transition.shouldEnterStandby)
             controller->activateStandby();
-        } else {
-            if (currentMode == MODE_STANDBY)
-                controller->deactivateStandby();
-            if (requestedMode != MODE_BREW)
-                controller->setMode(requestedMode);
-        }
+        if (transition.shouldWake)
+            controller->deactivateStandby();
+        if (transition.shouldSetMode)
+            controller->setMode(requestedMode);
     }
 
     if (command.hasTargetTemperature)

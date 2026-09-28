@@ -97,6 +97,35 @@ static void test_temperature_only_command_keeps_mode() {
     TEST_ASSERT_EQUAL(MACHINE_MODE_BREW, resolveRequestedMode(command, MACHINE_MODE_BREW));
 }
 
+static void assert_transition(int currentMode, int requestedMode, bool shouldEnterStandby, bool shouldWake,
+                              bool shouldSetMode) {
+    const ModeTransition transition = planModeTransition(currentMode, requestedMode);
+    TEST_ASSERT_EQUAL(shouldEnterStandby, transition.shouldEnterStandby);
+    TEST_ASSERT_EQUAL(shouldWake, transition.shouldWake);
+    TEST_ASSERT_EQUAL(shouldSetMode, transition.shouldSetMode);
+}
+
+static void test_transition_between_awake_modes_sets_mode() {
+    // Regression: Steam/Hot Water -> Brew used to do nothing because brew was only reached by waking.
+    assert_transition(MACHINE_MODE_STEAM, MACHINE_MODE_BREW, false, false, true);
+    assert_transition(MACHINE_MODE_WATER, MACHINE_MODE_BREW, false, false, true);
+    assert_transition(MACHINE_MODE_BREW, MACHINE_MODE_STEAM, false, false, true);
+    assert_transition(MACHINE_MODE_STEAM, MACHINE_MODE_WATER, false, false, true);
+    assert_transition(MACHINE_MODE_GRIND, MACHINE_MODE_BREW, false, false, true);
+}
+
+static void test_transition_from_standby_wakes() {
+    assert_transition(MACHINE_MODE_STANDBY, MACHINE_MODE_BREW, false, true, false);
+    assert_transition(MACHINE_MODE_STANDBY, MACHINE_MODE_STEAM, false, true, true);
+    assert_transition(MACHINE_MODE_STANDBY, MACHINE_MODE_WATER, false, true, true);
+}
+
+static void test_transition_to_standby_and_no_change() {
+    assert_transition(MACHINE_MODE_STEAM, MACHINE_MODE_STANDBY, true, false, false);
+    assert_transition(MACHINE_MODE_BREW, MACHINE_MODE_BREW, false, false, false);
+    assert_transition(MACHINE_MODE_STANDBY, MACHINE_MODE_STANDBY, false, false, false);
+}
+
 static void test_state_for_each_mode() {
     const HomekitState standby = stateForMode(MACHINE_MODE_STANDBY);
     TEST_ASSERT_EQUAL(HEATING_COOLING_OFF, standby.targetHeatingCooling);
@@ -161,6 +190,9 @@ int main() {
     RUN_TEST(test_switching_off_inactive_mode_is_ignored);
     RUN_TEST(test_latest_write_for_a_switch_wins);
     RUN_TEST(test_temperature_only_command_keeps_mode);
+    RUN_TEST(test_transition_between_awake_modes_sets_mode);
+    RUN_TEST(test_transition_from_standby_wakes);
+    RUN_TEST(test_transition_to_standby_and_no_change);
     RUN_TEST(test_state_for_each_mode);
     RUN_TEST(test_published_heating_cooling_state_never_auto);
     RUN_TEST(test_clamp_temperature);

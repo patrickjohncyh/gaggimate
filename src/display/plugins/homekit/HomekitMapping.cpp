@@ -36,6 +36,24 @@ int resolveRequestedMode(const HomekitCommand &command, int currentMode) {
     return currentMode;
 }
 
+ModeTransition planModeTransition(int currentMode, int requestedMode) {
+    ModeTransition transition;
+    if (requestedMode == currentMode)
+        return transition;
+    if (requestedMode == MACHINE_MODE_STANDBY) {
+        transition.shouldEnterStandby = true;
+        return transition;
+    }
+    if (currentMode == MACHINE_MODE_STANDBY) {
+        transition.shouldWake = true;
+        // Waking already lands in brew.
+        transition.shouldSetMode = requestedMode != MACHINE_MODE_BREW;
+        return transition;
+    }
+    transition.shouldSetMode = true;
+    return transition;
+}
+
 HomekitState stateForMode(int mode) {
     const bool isAwake = mode != MACHINE_MODE_STANDBY;
     const uint8_t heatingCooling = isAwake ? HEATING_COOLING_HEAT : HEATING_COOLING_OFF;
