@@ -86,6 +86,35 @@ Deferred: status sensors (Brewing/Ready/Low Water), per-device setup code and QR
 - FirmwareRevision is the numeric `x.y.z` from `BUILD_GIT_VERSION`, because HAP rejects
   suffixes like `-210-g6dff0448`.
 
+### Ready notification
+
+- **Espresso Ready** (`OccupancySensor`): on once the machine is awake and
+  `WarningManager::isTemperatureStable()` holds (20 s within max(2 °C, 2 %) of the setpoint).
+  It is latched through temperature dips (a shot) and resets on a mode or setpoint change, so
+  switching to steam gives a second "ready" when steam is at temperature. iOS notifications are
+  configured per sensor in the Home app.
+- **Heat soak.** A stable boiler (about 3 min) isn't enough: the ≈0.45 kg brass portafilter is
+  heated only through the group lugs, so it takes ≈15 min from cold. `HeatSoakEstimator` models
+  it as a first-order lag of the boiler temperature, normalised between room temperature and the
+  brew setpoint: `soak += (drive - soak) * (1 - e^(-dt/tau))`.
+  - tau = warm-up time / 3, where the warm-up time setting (`hk_wu`) defaults to 15 min;
+    0 means boiler only.
+  - Ready also requires soak ≥ 0.95.
+  - Room temperature is the first boiler reading if it's between 10 and 35 °C; otherwise the
+    model falls back to 28 °C.
+  - The model starts unsoaked at boot.
+  - The reference is the last brew setpoint, so a return from steam doesn't read as cooling.
+  - Estimates for the machine: boiler + water ≈1.1 kJ/K at 1360 W; portafilter ≈0.17 kJ/K fed
+    through ≈0.4 W/K with ≈0.15 W/K lost to the room, giving tau ≈ 5 min. These are tuned to
+    community warm-up reports (15–20 min) rather than measured; a thermocouple log from a cold
+    start would let us fit tau.
+- **Batching fix:** writes are staged in `update()` and committed at the start of the service
+  loops. HomeSpan runs every request's `update()` calls before any `loop()`, so one Siri request
+  always reaches the main task as a single command and the precedence rules hold.
+- A backflush reminder was built and then dropped at the user's request. HomeKit's
+  `FilterMaintenance` service only shows up linked to an Air Purifier, so a reminder would need
+  a sensor plus a reset switch instead.
+
 ## Tests
 
 - Pure logic lives in `src/display/plugins/homekit/HomekitMapping.{h,cpp}` (no HomeSpan or

@@ -23,6 +23,11 @@ void HomekitSharedState::setTargetTemperature(float temperature) {
     machineState.targetTemperature = temperature;
 }
 
+void HomekitSharedState::setReady(bool isReady) {
+    std::lock_guard<std::mutex> guard(mutex);
+    machineState.isReady = isReady;
+}
+
 HomekitSharedState::MachineState HomekitSharedState::getMachineState() const {
     std::lock_guard<std::mutex> guard(mutex);
     return machineState;
@@ -30,7 +35,15 @@ HomekitSharedState::MachineState HomekitSharedState::getMachineState() const {
 
 void HomekitSharedState::recordCommand(const std::function<void(homekit::HomekitCommand &)> &record) {
     std::lock_guard<std::mutex> guard(mutex);
-    record(pendingCommand);
+    record(stagedCommand);
+}
+
+void HomekitSharedState::commitStagedCommand() {
+    std::lock_guard<std::mutex> guard(mutex);
+    if (stagedCommand.isEmpty())
+        return;
+    pendingCommand.merge(stagedCommand);
+    stagedCommand = homekit::HomekitCommand{};
 }
 
 bool HomekitSharedState::beginApplyingCommand(homekit::HomekitCommand &command) {
@@ -50,7 +63,7 @@ void HomekitSharedState::finishApplyingCommand() {
 
 bool HomekitSharedState::hasUnappliedCommand() const {
     std::lock_guard<std::mutex> guard(mutex);
-    return isApplyingCommand || !pendingCommand.isEmpty();
+    return isApplyingCommand || !pendingCommand.isEmpty() || !stagedCommand.isEmpty();
 }
 
 HomekitThermostat::HomekitThermostat(HomekitSharedState &sharedState) : sharedState(sharedState) {
@@ -82,6 +95,9 @@ boolean HomekitThermostat::update() {
 }
 
 void HomekitThermostat::loop() {
+    // First service loop after HomeSpan handled this cycle's requests (services loop in creation
+    // order, the thermostat is created first); later loops find nothing left to commit.
+    sharedState.commitStagedCommand();
     if (sharedState.hasUnappliedCommand())
         return;
     const HomekitSharedState::MachineState machineState = sharedState.getMachineState();
@@ -113,11 +129,24 @@ boolean HomekitModeSwitch::update() {
 }
 
 void HomekitModeSwitch::loop() {
+    sharedState.commitStagedCommand();
     if (sharedState.hasUnappliedCommand())
         return;
     const bool shouldBeOn = sharedState.getMachineState().mode == mode;
     if (isOn->getVal() != shouldBeOn)
         isOn->setVal(shouldBeOn);
+}
+
+HomekitReadySensor::HomekitReadySensor(HomekitSharedState &sharedState) : sharedState(sharedState) {
+    new Characteristic::Name("Espresso Ready");
+    new Characteristic::ConfiguredName("Espresso Ready");
+    isDetected = new Characteristic::OccupancyDetected();
+}
+
+void HomekitReadySensor::loop() {
+    const uint8_t shouldBeDetected = sharedState.getMachineState().isReady ? 1 : 0;
+    if (isDetected->getVal() != shouldBeDetected)
+        isDetected->setVal(shouldBeDetected);
 }
 
 HomekitPlugin::HomekitPlugin(String wifiSsid, String wifiPassword) : controller(nullptr) {
@@ -167,6 +196,7 @@ void HomekitPlugin::startHomeSpan() {
     new HomekitModeSwitch(sharedState, MODE_BREW, "Brew");
     new HomekitModeSwitch(sharedState, MODE_STEAM, "Steam");
     new HomekitModeSwitch(sharedState, MODE_WATER, "Hot Water");
+    new HomekitReadySensor(sharedState);
 
     homeSpan.autoPoll();
     isStarted = true;
@@ -175,6 +205,8 @@ void HomekitPlugin::startHomeSpan() {
 void HomekitPlugin::loop() {
     if (controller == nullptr)
         return;
+    publishStatus();
+
     homekit::HomekitCommand command;
     if (!sharedState.beginApplyingCommand(command))
         return;
@@ -184,6 +216,30 @@ void HomekitPlugin::loop() {
     sharedState.setMode(controller->getMode());
     sharedState.setTargetTemperature(controller->getTargetTemp());
     sharedState.finishApplyingCommand();
+}
+
+void HomekitPlugin::publishStatus() {
+    const int mode = controller->getMode();
+    const float targetTemperature = controller->getTargetTemp();
+    if (mode == MODE_BREW && targetTemperature > 0.0f)
+        brewReferenceTemperature = targetTemperature;
+
+    const unsigned long now = millis();
+    const unsigned long elapsedMillis = now - lastSoakUpdateMillis;
+    if (lastSoakUpdateMillis == 0 || elapsedMillis >= SOAK_UPDATE_INTERVAL_MS) {
+        const float timeConstantSeconds =
+            static_cast<float>(controller->getSettings().getWarmupMinutes()) * 60.0f / homekit::WARMUP_TIME_CONSTANTS;
+        const float elapsedSeconds = lastSoakUpdateMillis == 0 ? 0.0f : static_cast<float>(elapsedMillis) / 1000.0f;
+        heatSoakEstimator.update(controller->getCurrentTemp(), brewReferenceTemperature, timeConstantSeconds, elapsedSeconds);
+        lastSoakUpdateMillis = now;
+        ESP_LOGD(LOG_TAG, "Heat soak %.3f (room %.1f, reference %.1f)", heatSoakEstimator.getSoakLevel(),
+                 heatSoakEstimator.getRoomTemperature(), brewReferenceTemperature);
+    }
+
+    const bool isHeatSoaked = controller->getSettings().getWarmupMinutes() == 0 ||
+                              heatSoakEstimator.getSoakLevel() >= homekit::HEAT_SOAKED_LEVEL;
+    sharedState.setReady(readinessTracker.update(mode, targetTemperature, controller->getWarnings().isTemperatureStable(),
+                                                 isHeatSoaked));
 }
 
 void HomekitPlugin::applyCommand(const homekit::HomekitCommand &command) {

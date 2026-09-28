@@ -66,6 +66,39 @@ HomekitState stateForMode(int mode) {
     };
 }
 
+float HeatSoakEstimator::update(float boilerTemperature, float referenceTemperature, float timeConstantSeconds,
+                                float elapsedSeconds) {
+    if (boilerTemperature <= 0.0f)
+        return soakLevel;
+    if (!hasRoomTemperature) {
+        const bool isPlausibleRoomTemperature = boilerTemperature >= PLAUSIBLE_ROOM_TEMPERATURE_MIN &&
+                                                boilerTemperature <= PLAUSIBLE_ROOM_TEMPERATURE_MAX;
+        roomTemperature = isPlausibleRoomTemperature ? boilerTemperature : FALLBACK_ROOM_TEMPERATURE;
+        hasRoomTemperature = true;
+    }
+    const float span = referenceTemperature - roomTemperature;
+    if (span <= 0.0f || timeConstantSeconds <= 0.0f || elapsedSeconds <= 0.0f)
+        return soakLevel;
+
+    float drive = (boilerTemperature - roomTemperature) / span;
+    drive = drive < 0.0f ? 0.0f : (drive > 1.0f ? 1.0f : drive);
+    // Exact discretisation of the first-order lag, so irregular loop timing doesn't skew it.
+    soakLevel += (drive - soakLevel) * (1.0f - std::exp(-elapsedSeconds / timeConstantSeconds));
+    return soakLevel;
+}
+
+bool ReadinessTracker::update(int mode, float targetTemperature, bool isTemperatureStable, bool isHeatSoaked) {
+    if (mode != lastMode || targetTemperature != lastTargetTemperature)
+        isReady = false;
+    lastMode = mode;
+    lastTargetTemperature = targetTemperature;
+    if (mode == MACHINE_MODE_STANDBY)
+        return isReady = false;
+    if (isTemperatureStable && isHeatSoaked)
+        isReady = true;
+    return isReady;
+}
+
 float clampTemperature(float temperature) {
     if (std::isnan(temperature) || temperature < TEMPERATURE_MIN)
         return TEMPERATURE_MIN;

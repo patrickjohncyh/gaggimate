@@ -166,6 +166,109 @@ static void test_should_publish_temperature_threshold() {
     TEST_ASSERT_FALSE(shouldPublishTemperature(TEMPERATURE_MAX, 400.0f));
 }
 
+static void test_merge_keeps_one_siri_request_together() {
+    // Writes staged across one HAP request must resolve as a single batch.
+    HomekitCommand staged;
+    staged.requestPower(true);
+    HomekitCommand later;
+    later.requestModeSwitch(MACHINE_MODE_STEAM, true);
+    later.requestModeSwitch(MACHINE_MODE_BREW, true);
+    staged.merge(later);
+    TEST_ASSERT_EQUAL(MACHINE_MODE_BREW, resolveRequestedMode(staged, MACHINE_MODE_STANDBY));
+
+    HomekitCommand turnSteamOff;
+    turnSteamOff.requestModeSwitch(MACHINE_MODE_STEAM, false);
+    staged.merge(turnSteamOff);
+    TEST_ASSERT_EQUAL(0, staged.modesSwitchedOn & (1u << MACHINE_MODE_STEAM));
+}
+
+static void test_readiness_latches_through_temperature_dips() {
+    ReadinessTracker tracker;
+    TEST_ASSERT_FALSE(tracker.update(MACHINE_MODE_BREW, 93.0f, false, true));
+    TEST_ASSERT_TRUE(tracker.update(MACHINE_MODE_BREW, 93.0f, true, true));
+    // Shot pulls the temperature down: stays ready, no repeat notification.
+    TEST_ASSERT_TRUE(tracker.update(MACHINE_MODE_BREW, 93.0f, false, true));
+}
+
+static void test_readiness_waits_for_heat_soak() {
+    ReadinessTracker tracker;
+    // Boiler stable after ~3 min, but the portafilter is still cold.
+    TEST_ASSERT_FALSE(tracker.update(MACHINE_MODE_BREW, 93.0f, true, false));
+    TEST_ASSERT_TRUE(tracker.update(MACHINE_MODE_BREW, 93.0f, true, true));
+}
+
+static void test_readiness_resets_on_mode_or_target_change() {
+    ReadinessTracker tracker;
+    tracker.update(MACHINE_MODE_BREW, 93.0f, true, true);
+    TEST_ASSERT_FALSE(tracker.update(MACHINE_MODE_STEAM, 145.0f, false, true));
+    TEST_ASSERT_TRUE(tracker.update(MACHINE_MODE_STEAM, 145.0f, true, true));
+    // Stability can still read true on the first sample after a setpoint change.
+    TEST_ASSERT_FALSE(tracker.update(MACHINE_MODE_STEAM, 140.0f, false, true));
+}
+
+static void test_readiness_is_false_in_standby() {
+    ReadinessTracker tracker;
+    tracker.update(MACHINE_MODE_BREW, 93.0f, true, true);
+    TEST_ASSERT_FALSE(tracker.update(MACHINE_MODE_STANDBY, 0.0f, true, true));
+}
+
+static constexpr float TEST_TIME_CONSTANT_S = 300.0f; // 15 min warm-up
+
+// Holds the boiler at a temperature for a duration, stepping like the plugin (1 s updates).
+static void hold(HeatSoakEstimator &estimator, float boilerTemperature, float seconds, float reference = 93.0f) {
+    for (float elapsed = 0.0f; elapsed < seconds; elapsed += 1.0f)
+        estimator.update(boilerTemperature, reference, TEST_TIME_CONSTANT_S, 1.0f);
+}
+
+static void test_heat_soak_cold_start_takes_three_time_constants() {
+    HeatSoakEstimator estimator;
+    estimator.update(21.0f, 93.0f, TEST_TIME_CONSTANT_S, 0.0f); // first reading at room temperature
+    TEST_ASSERT_EQUAL_FLOAT(21.0f, estimator.getRoomTemperature());
+    hold(estimator, 93.0f, 2.9f * TEST_TIME_CONSTANT_S);
+    TEST_ASSERT_TRUE(estimator.getSoakLevel() < HEAT_SOAKED_LEVEL);
+    hold(estimator, 93.0f, 0.2f * TEST_TIME_CONSTANT_S);
+    TEST_ASSERT_TRUE(estimator.getSoakLevel() >= HEAT_SOAKED_LEVEL);
+}
+
+static void test_heat_soak_room_temperature_fallback_when_booted_hot() {
+    HeatSoakEstimator estimator;
+    estimator.update(90.0f, 93.0f, TEST_TIME_CONSTANT_S, 0.0f);
+    TEST_ASSERT_EQUAL_FLOAT(FALLBACK_ROOM_TEMPERATURE, estimator.getRoomTemperature());
+    // Starts unsoaked even though the boiler is hot: the portafilter state is unknown.
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, estimator.getSoakLevel());
+}
+
+static void test_heat_soak_ignores_missing_readings() {
+    HeatSoakEstimator estimator;
+    estimator.update(0.0f, 93.0f, TEST_TIME_CONSTANT_S, 60.0f);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, estimator.getSoakLevel());
+    estimator.update(24.0f, 93.0f, TEST_TIME_CONSTANT_S, 0.0f);
+    TEST_ASSERT_EQUAL_FLOAT(24.0f, estimator.getRoomTemperature());
+}
+
+static void test_heat_soak_short_standby_rewarms_faster_than_cold_start() {
+    HeatSoakEstimator estimator;
+    estimator.update(22.0f, 93.0f, TEST_TIME_CONSTANT_S, 0.0f);
+    hold(estimator, 93.0f, 30.0f * 60.0f); // fully soaked
+    hold(estimator, 80.0f, 10.0f * 60.0f); // 10 min standby, boiler cooled to ~80 °C
+    TEST_ASSERT_TRUE(estimator.getSoakLevel() > 0.8f);
+
+    float rewarmSeconds = 0.0f;
+    while (estimator.getSoakLevel() < HEAT_SOAKED_LEVEL) {
+        estimator.update(93.0f, 93.0f, TEST_TIME_CONSTANT_S, 1.0f);
+        rewarmSeconds += 1.0f;
+    }
+    TEST_ASSERT_TRUE(rewarmSeconds < 3.0f * TEST_TIME_CONSTANT_S / 2.0f); // well under half a cold start
+}
+
+static void test_heat_soak_steam_counts_as_fully_hot() {
+    HeatSoakEstimator estimator;
+    estimator.update(22.0f, 93.0f, TEST_TIME_CONSTANT_S, 0.0f);
+    hold(estimator, 145.0f, 3.2f * TEST_TIME_CONSTANT_S);
+    TEST_ASSERT_TRUE(estimator.getSoakLevel() >= HEAT_SOAKED_LEVEL);
+    TEST_ASSERT_TRUE(estimator.getSoakLevel() <= 1.0f);
+}
+
 static void test_firmware_revision_from_version() {
     TEST_ASSERT_EQUAL_STRING("1.8.1", firmwareRevisionFromVersion("v1.8.1").c_str());
     TEST_ASSERT_EQUAL_STRING("1.8.1", firmwareRevisionFromVersion("v1.8.1-210-g6dff0448-dirty").c_str());
@@ -197,6 +300,16 @@ int main() {
     RUN_TEST(test_published_heating_cooling_state_never_auto);
     RUN_TEST(test_clamp_temperature);
     RUN_TEST(test_should_publish_temperature_threshold);
+    RUN_TEST(test_merge_keeps_one_siri_request_together);
+    RUN_TEST(test_readiness_latches_through_temperature_dips);
+    RUN_TEST(test_readiness_waits_for_heat_soak);
+    RUN_TEST(test_readiness_resets_on_mode_or_target_change);
+    RUN_TEST(test_readiness_is_false_in_standby);
+    RUN_TEST(test_heat_soak_cold_start_takes_three_time_constants);
+    RUN_TEST(test_heat_soak_room_temperature_fallback_when_booted_hot);
+    RUN_TEST(test_heat_soak_ignores_missing_readings);
+    RUN_TEST(test_heat_soak_short_standby_rewarms_faster_than_cold_start);
+    RUN_TEST(test_heat_soak_steam_counts_as_fully_hot);
     RUN_TEST(test_firmware_revision_from_version);
     return UNITY_END();
 }

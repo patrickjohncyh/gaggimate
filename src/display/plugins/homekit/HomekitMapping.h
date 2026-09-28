@@ -54,6 +54,21 @@ struct HomekitCommand {
         return power == PowerRequest::None && !hasTargetTemperature && modesSwitchedOn == 0 && modesSwitchedOff == 0;
     }
 
+    // Folds a later batch of writes into this one; later writes to the same target win.
+    void merge(const HomekitCommand &later) {
+        if (later.power != PowerRequest::None)
+            power = later.power;
+        if (later.hasTargetTemperature)
+            requestTargetTemperature(later.targetTemperature);
+        for (int mode = MACHINE_MODE_STANDBY; mode <= MACHINE_MODE_GRIND; mode++) {
+            const uint8_t bit = static_cast<uint8_t>(1u << mode);
+            if (later.modesSwitchedOn & bit)
+                requestModeSwitch(mode, true);
+            if (later.modesSwitchedOff & bit)
+                requestModeSwitch(mode, false);
+        }
+    }
+
     void requestPower(bool isOn) { power = isOn ? PowerRequest::On : PowerRequest::Off; }
 
     void requestTargetTemperature(float temperature) {
@@ -156,6 +171,82 @@ ModeTransition planModeTransition(int currentMode, int requestedMode);
  * Example: stateForMode(MACHINE_MODE_STANDBY).targetHeatingCooling == HEATING_COOLING_OFF
  */
 HomekitState stateForMode(int mode);
+
+// Room temperature assumed when the first boiler reading after boot is not a plausible room
+// temperature (e.g. the display restarted while the machine was hot).
+constexpr float FALLBACK_ROOM_TEMPERATURE = 28.0f;
+constexpr float PLAUSIBLE_ROOM_TEMPERATURE_MIN = 10.0f;
+constexpr float PLAUSIBLE_ROOM_TEMPERATURE_MAX = 35.0f;
+// Soak level treated as "heat-soaked": 1 - e^-3, i.e. three time constants from cold.
+constexpr float HEAT_SOAKED_LEVEL = 0.95f;
+// The warm-up time setting covers three time constants (95 % soaked from cold).
+constexpr float WARMUP_TIME_CONSTANTS = 3.0f;
+
+/**
+ * Estimates how heat-soaked the group and portafilter are, from the boiler temperature alone.
+ *
+ * The portafilter is a ~0.45 kg brass mass heated through the group lugs, so it follows the
+ * boiler as a first-order lag: d(soak)/dt = (drive - soak) / tau, where drive is the boiler
+ * temperature normalised between room temperature (0) and the reference temperature (1). A cold
+ * start takes three time constants to reach HEAT_SOAKED_LEVEL; a short standby only loses as much
+ * soak as the boiler actually cooled, so re-warming is correspondingly shorter. Heating and
+ * cooling share one time constant (the real portafilter cools a little slower, so this errs
+ * towards reporting ready late, never early). Starts unsoaked at boot.
+ *
+ * Example:
+ *   HeatSoakEstimator estimator;
+ *   estimator.update(93.0f, 93.0f, 300.0f, 900.0f); // 15 min at temperature, tau = 5 min
+ *   estimator.getSoakLevel() >= HEAT_SOAKED_LEVEL
+ */
+class HeatSoakEstimator {
+  public:
+    /**
+     * Advances the model by elapsedSeconds with the boiler held at boilerTemperature.
+     *
+     * @param boilerTemperature current boiler reading; readings <= 0 (no sensor data yet) are ignored
+     * @param referenceTemperature temperature that counts as fully hot (the brew setpoint)
+     * @param timeConstantSeconds tau of the portafilter lag
+     * @param elapsedSeconds time since the previous update
+     * @return the updated soak level, 0 (room temperature) .. 1 (fully soaked)
+     */
+    float update(float boilerTemperature, float referenceTemperature, float timeConstantSeconds, float elapsedSeconds);
+    float getSoakLevel() const { return soakLevel; }
+    float getRoomTemperature() const { return roomTemperature; }
+
+  private:
+    bool hasRoomTemperature = false;
+    float roomTemperature = FALLBACK_ROOM_TEMPERATURE;
+    float soakLevel = 0.0f;
+};
+
+/**
+ * Latched "machine is ready" state for the Espresso Ready sensor.
+ *
+ * Becomes ready once the machine is awake, the display reports the boiler temperature as stable,
+ * and the group/portafilter are heat-soaked. Stays ready through temperature dips (e.g. during a
+ * shot) so iOS doesn't notify repeatedly; resets when the mode or the target temperature changes,
+ * so switching to steam notifies again once steam is at temperature.
+ *
+ * Example:
+ *   ReadinessTracker tracker;
+ *   tracker.update(MACHINE_MODE_BREW, 93.0f, true, true) == true
+ */
+class ReadinessTracker {
+  public:
+    /**
+     * @param mode current MODE_* value
+     * @param targetTemperature current boiler setpoint
+     * @param isTemperatureStable WarningManager::isTemperatureStable()
+     * @param isHeatSoaked whether HeatSoakEstimator reports the group/portafilter as soaked
+     * @return whether the machine is ready
+     */
+    bool update(int mode, float targetTemperature, bool isTemperatureStable, bool isHeatSoaked);
+
+  private:
+    int lastMode = MACHINE_MODE_STANDBY;
+    float lastTargetTemperature = 0.0f;
+    bool isReady = false;
+};
 
 /**
  * Clamps a temperature into the range advertised to HomeKit.

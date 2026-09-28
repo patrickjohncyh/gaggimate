@@ -167,6 +167,8 @@ void Settings::setMomentaryButtons(bool momentary_buttons) { momentaryButtons.se
 
 void Settings::setFlushDuration(int seconds) { flushDuration.set(std::clamp(seconds, 0, MAX_FLUSH_DURATION_S)); }
 
+void Settings::setWarmupMinutes(int minutes) { warmupMinutes.set(std::clamp(minutes, 0, MAX_WARMUP_MINUTES)); }
+
 // Clamp to the WarningLevel range so a bad web value can't leave a warning in an undefined state.
 static int clampWarningLevel(int level) {
     return level < WARNING_LEVEL_IGNORE ? WARNING_LEVEL_IGNORE : (level > WARNING_LEVEL_ERROR ? WARNING_LEVEL_ERROR : level);

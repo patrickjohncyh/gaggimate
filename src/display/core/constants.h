@@ -12,6 +12,8 @@
 #define BREW_MIN_VOLUMETRIC 5.0
 #define DEFAULT_FLUSH_DURATION_S 5
 #define MAX_FLUSH_DURATION_S 60
+#define DEFAULT_WARMUP_MINUTES 15
+#define MAX_WARMUP_MINUTES 60
 #define FLUSH_HOLD_MAX_DURATION_S 60 // safety cap for hold-to-flush (flush duration 0)
 #define FLUSH_DRAIN_DURATION_S 1     // valve stays open this long after the flush pump stops
 #define BREW_MAX_VOLUMETRIC 250.0
