@@ -157,6 +157,27 @@ export function PluginCard({
               Open the Home app on your iOS device, select Add Accessory, and enter the setup code
               shown above.
             </p>
+            <div className='form-control w-full'>
+              <label htmlFor='warmupMinutes' className='mb-2 block text-sm font-medium'>
+                Warm-up time (minutes, 0 = boiler only)
+              </label>
+              <input
+                id='warmupMinutes'
+                name='warmupMinutes'
+                type='number'
+                min='0'
+                max='60'
+                className='input input-bordered w-full'
+                placeholder='15'
+                value={formData.warmupMinutes}
+                onChange={onChange('warmupMinutes')}
+              />
+              <p className='text-base-content/70 mt-2 text-sm'>
+                How long a cold machine takes to heat-soak the group and portafilter. &quot;Espresso
+                Ready&quot; turns on once the boiler is stable and this warm-up is done; after a
+                short standby it re-warms proportionally faster.
+              </p>
+            </div>
           </div>
         )}
       </div>

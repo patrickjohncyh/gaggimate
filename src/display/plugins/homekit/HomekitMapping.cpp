@@ -1,0 +1,136 @@
+#include "HomekitMapping.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <iterator>
+
+namespace homekit {
+
+namespace {
+
+// Brew first: the mode with the lowest boiler temperature is the safest pick when several are requested.
+constexpr int MODE_SWITCH_PRIORITY[] = {MACHINE_MODE_BREW, MACHINE_MODE_WATER, MACHINE_MODE_STEAM};
+
+bool isModeRequested(uint8_t modes, int mode) { return (modes & (1u << mode)) != 0; }
+
+} // namespace
+
+bool isPowerOnRequest(int targetHeatingCooling) { return targetHeatingCooling != HEATING_COOLING_OFF; }
+
+int resolveRequestedMode(const HomekitCommand &command, int currentMode) {
+    if (command.power == PowerRequest::Off)
+        return MACHINE_MODE_STANDBY;
+
+    const int *requestedMode = std::find_if(std::begin(MODE_SWITCH_PRIORITY), std::end(MODE_SWITCH_PRIORITY),
+                                            [&](int mode) { return isModeRequested(command.modesSwitchedOn, mode); });
+    if (requestedMode != std::end(MODE_SWITCH_PRIORITY))
+        return *requestedMode;
+
+    if (command.power == PowerRequest::On)
+        return currentMode == MACHINE_MODE_STANDBY ? MACHINE_MODE_BREW : currentMode;
+
+    // Turning off the active mode's switch means "turn the machine off"; turning off a switch that
+    // is not active is a no-op (HomeKit may still send it when it turns off every switch at once).
+    if (isModeRequested(command.modesSwitchedOff, currentMode))
+        return MACHINE_MODE_STANDBY;
+
+    return currentMode;
+}
+
+ModeTransition planModeTransition(int currentMode, int requestedMode) {
+    ModeTransition transition;
+    if (requestedMode == currentMode)
+        return transition;
+    if (requestedMode == MACHINE_MODE_STANDBY) {
+        transition.shouldEnterStandby = true;
+        return transition;
+    }
+    if (currentMode == MACHINE_MODE_STANDBY) {
+        transition.shouldWake = true;
+        // Waking already lands in brew.
+        transition.shouldSetMode = requestedMode != MACHINE_MODE_BREW;
+        return transition;
+    }
+    transition.shouldSetMode = true;
+    return transition;
+}
+
+HomekitState stateForMode(int mode) {
+    const bool isAwake = mode != MACHINE_MODE_STANDBY;
+    const uint8_t heatingCooling = isAwake ? HEATING_COOLING_HEAT : HEATING_COOLING_OFF;
+    return HomekitState{
+        heatingCooling, heatingCooling, mode == MACHINE_MODE_BREW, mode == MACHINE_MODE_STEAM, mode == MACHINE_MODE_WATER,
+    };
+}
+
+float HeatSoakEstimator::update(float boilerTemperature, float referenceTemperature, float timeConstantSeconds,
+                                float elapsedSeconds) {
+    if (boilerTemperature <= 0.0f)
+        return soakLevel;
+    if (!hasRoomTemperature) {
+        const bool isPlausibleRoomTemperature =
+            boilerTemperature >= PLAUSIBLE_ROOM_TEMPERATURE_MIN && boilerTemperature <= PLAUSIBLE_ROOM_TEMPERATURE_MAX;
+        roomTemperature = isPlausibleRoomTemperature ? boilerTemperature : FALLBACK_ROOM_TEMPERATURE;
+        hasRoomTemperature = true;
+    }
+    const float span = referenceTemperature - roomTemperature;
+    if (span <= 0.0f || timeConstantSeconds <= 0.0f || elapsedSeconds <= 0.0f)
+        return soakLevel;
+
+    float drive = (boilerTemperature - roomTemperature) / span;
+    drive = drive < 0.0f ? 0.0f : (drive > 1.0f ? 1.0f : drive);
+    // Exact discretisation of the first-order lag, so irregular loop timing doesn't skew it.
+    soakLevel += (drive - soakLevel) * (1.0f - std::exp(-elapsedSeconds / timeConstantSeconds));
+    return soakLevel;
+}
+
+bool ReadinessTracker::update(int mode, float targetTemperature, bool isTemperatureStable, bool isHeatSoaked) {
+    if (mode != lastMode || targetTemperature != lastTargetTemperature)
+        isReady = false;
+    lastMode = mode;
+    lastTargetTemperature = targetTemperature;
+    if (mode == MACHINE_MODE_STANDBY)
+        return isReady = false;
+    if (isTemperatureStable && isHeatSoaked)
+        isReady = true;
+    return isReady;
+}
+
+float clampTemperature(float temperature) {
+    if (std::isnan(temperature) || temperature < TEMPERATURE_MIN)
+        return TEMPERATURE_MIN;
+    if (temperature > TEMPERATURE_MAX)
+        return TEMPERATURE_MAX;
+    return temperature;
+}
+
+bool shouldPublishTemperature(float publishedTemperature, float temperature) {
+    return std::fabs(clampTemperature(temperature) - publishedTemperature) >= TEMPERATURE_NOTIFY_THRESHOLD;
+}
+
+std::string firmwareRevisionFromVersion(const char *version) {
+    constexpr int MAX_PARTS = 3;
+    std::string revision;
+    if (version == nullptr)
+        return "0.0.0";
+
+    const char *cursor = version;
+    if (*cursor == 'v' || *cursor == 'V')
+        cursor++;
+
+    int parts = 0;
+    while (parts < MAX_PARTS && std::isdigit(static_cast<unsigned char>(*cursor))) {
+        if (parts > 0)
+            revision += '.';
+        while (std::isdigit(static_cast<unsigned char>(*cursor)))
+            revision += *cursor++;
+        parts++;
+        if (*cursor != '.')
+            break;
+        cursor++;
+    }
+    return parts == 0 ? "0.0.0" : revision;
+}
+
+} // namespace homekit
