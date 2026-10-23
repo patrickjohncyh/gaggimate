@@ -97,8 +97,7 @@ static void test_temperature_only_command_keeps_mode() {
     TEST_ASSERT_EQUAL(MACHINE_MODE_BREW, resolveRequestedMode(command, MACHINE_MODE_BREW));
 }
 
-static void assert_transition(int currentMode, int requestedMode, bool shouldEnterStandby, bool shouldWake,
-                              bool shouldSetMode) {
+static void assert_transition(int currentMode, int requestedMode, bool shouldEnterStandby, bool shouldWake, bool shouldSetMode) {
     const ModeTransition transition = planModeTransition(currentMode, requestedMode);
     TEST_ASSERT_EQUAL(shouldEnterStandby, transition.shouldEnterStandby);
     TEST_ASSERT_EQUAL(shouldWake, transition.shouldWake);

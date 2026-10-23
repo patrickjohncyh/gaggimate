@@ -1,7 +1,9 @@
 #include "HomekitMapping.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <iterator>
 
 namespace homekit {
 
@@ -20,10 +22,10 @@ int resolveRequestedMode(const HomekitCommand &command, int currentMode) {
     if (command.power == PowerRequest::Off)
         return MACHINE_MODE_STANDBY;
 
-    for (int mode : MODE_SWITCH_PRIORITY) {
-        if (isModeRequested(command.modesSwitchedOn, mode))
-            return mode;
-    }
+    const int *requestedMode = std::find_if(std::begin(MODE_SWITCH_PRIORITY), std::end(MODE_SWITCH_PRIORITY),
+                                            [&](int mode) { return isModeRequested(command.modesSwitchedOn, mode); });
+    if (requestedMode != std::end(MODE_SWITCH_PRIORITY))
+        return *requestedMode;
 
     if (command.power == PowerRequest::On)
         return currentMode == MACHINE_MODE_STANDBY ? MACHINE_MODE_BREW : currentMode;
@@ -58,11 +60,7 @@ HomekitState stateForMode(int mode) {
     const bool isAwake = mode != MACHINE_MODE_STANDBY;
     const uint8_t heatingCooling = isAwake ? HEATING_COOLING_HEAT : HEATING_COOLING_OFF;
     return HomekitState{
-        heatingCooling,
-        heatingCooling,
-        mode == MACHINE_MODE_BREW,
-        mode == MACHINE_MODE_STEAM,
-        mode == MACHINE_MODE_WATER,
+        heatingCooling, heatingCooling, mode == MACHINE_MODE_BREW, mode == MACHINE_MODE_STEAM, mode == MACHINE_MODE_WATER,
     };
 }
 
@@ -71,8 +69,8 @@ float HeatSoakEstimator::update(float boilerTemperature, float referenceTemperat
     if (boilerTemperature <= 0.0f)
         return soakLevel;
     if (!hasRoomTemperature) {
-        const bool isPlausibleRoomTemperature = boilerTemperature >= PLAUSIBLE_ROOM_TEMPERATURE_MIN &&
-                                                boilerTemperature <= PLAUSIBLE_ROOM_TEMPERATURE_MAX;
+        const bool isPlausibleRoomTemperature =
+            boilerTemperature >= PLAUSIBLE_ROOM_TEMPERATURE_MIN && boilerTemperature <= PLAUSIBLE_ROOM_TEMPERATURE_MAX;
         roomTemperature = isPlausibleRoomTemperature ? boilerTemperature : FALLBACK_ROOM_TEMPERATURE;
         hasRoomTemperature = true;
     }

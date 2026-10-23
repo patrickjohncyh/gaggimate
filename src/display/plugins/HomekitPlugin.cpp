@@ -236,10 +236,10 @@ void HomekitPlugin::publishStatus() {
                  heatSoakEstimator.getRoomTemperature(), brewReferenceTemperature);
     }
 
-    const bool isHeatSoaked = controller->getSettings().getWarmupMinutes() == 0 ||
-                              heatSoakEstimator.getSoakLevel() >= homekit::HEAT_SOAKED_LEVEL;
-    sharedState.setReady(readinessTracker.update(mode, targetTemperature, controller->getWarnings().isTemperatureStable(),
-                                                 isHeatSoaked));
+    const bool isHeatSoaked =
+        controller->getSettings().getWarmupMinutes() == 0 || heatSoakEstimator.getSoakLevel() >= homekit::HEAT_SOAKED_LEVEL;
+    sharedState.setReady(
+        readinessTracker.update(mode, targetTemperature, controller->getWarnings().isTemperatureStable(), isHeatSoaked));
 }
 
 void HomekitPlugin::applyCommand(const homekit::HomekitCommand &command) {

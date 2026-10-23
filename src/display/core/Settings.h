@@ -111,7 +111,7 @@ class Settings {
     String getHomeAssistantTopic() const { return homeAssistantTopic.get(); }
     bool isMomentaryButtons() const { return momentaryButtons.get(); }
     int getFlushDuration() const { return flushDuration.get(); } // seconds, 0 = as long as the button is held
-    int getWarmupMinutes() const { return warmupMinutes.get(); }  // group/portafilter heat-soak, 0 = boiler only
+    int getWarmupMinutes() const { return warmupMinutes.get(); } // group/portafilter heat-soak, 0 = boiler only
     String getTimezone() const { return timezone.get(); }
     bool isClock24hFormat() const { return clock24hFormat.get(); }
     String getSelectedProfile() const { return selectedProfile.get(); }
