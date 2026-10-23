@@ -1,6 +1,7 @@
 #include "Settings.h"
 
 #include <algorithm>
+#include <cmath>
 #include <display/util/ColorConversion.h>
 #include <utility>
 
@@ -101,6 +102,27 @@ void Settings::setPressureOffset(const float pressure_offset) { pressureOffset.s
 
 void Settings::setPressureScaling(const float pressure_scaling) { pressureScaling.set(pressure_scaling); }
 
+void Settings::setScaleFactors(float scale_factor_1, float scale_factor_2) {
+    scaleFactor1.set(scale_factor_1);
+    scaleFactor2.set(scale_factor_2);
+}
+
+void Settings::setHardwareScaleConfiguration(uint16_t sample_rate_sps, float idle_alpha, float active_alpha) {
+    hardwareScaleSampleRateSps.set((sample_rate_sps == 10 || sample_rate_sps == 80) ? sample_rate_sps
+                                                                                    : DEFAULT_HARDWARE_SCALE_SAMPLE_RATE_SPS);
+    hardwareScaleIdleAlpha.set(
+        std::isfinite(idle_alpha) && idle_alpha > 0.0f && idle_alpha <= 1.0f ? idle_alpha : DEFAULT_HARDWARE_SCALE_IDLE_ALPHA);
+    hardwareScaleActiveAlpha.set(std::isfinite(active_alpha) && active_alpha > 0.0f && active_alpha <= 1.0f
+                                     ? active_alpha
+                                     : DEFAULT_HARDWARE_SCALE_ACTIVE_ALPHA);
+}
+
+void Settings::setPreferredScaleSource(const String &scaleSource) {
+    if (scaleSource == "hardware" || scaleSource == "bluetooth" || scaleSource == "auto") {
+        preferredScaleSource.set(scaleSource);
+    }
+}
+
 void Settings::setTargetGrindVolume(double target_grind_volume) { targetGrindVolume.set(target_grind_volume); }
 
 void Settings::setTargetGrindDuration(const int target_duration) { targetGrindDuration.set(target_duration); }
@@ -116,6 +138,12 @@ void Settings::setStartupMode(const int startup_mode) { startupMode.set(startup_
 void Settings::setStandbyTimeout(int standby_timeout) { standbyTimeout.set(standby_timeout); }
 
 void Settings::setPid(const String &pid) { this->pid.set(pid); }
+
+void Settings::setHeaterCoordinationEnabled(bool enabled) { heaterCoordinationEnabled.set(enabled); }
+
+void Settings::setHeaterHandoverMs(int handoverMs) {
+    heaterHandoverMs.set(std::clamp(handoverMs, MIN_HEATER_HANDOVER_MS, MAX_HEATER_HANDOVER_MS));
+}
 
 void Settings::setPumpModelCoeffs(const String &pumpModelCoeffs) { this->pumpModelCoeffs.set(pumpModelCoeffs); }
 
@@ -137,6 +165,8 @@ void Settings::setOTAChannel(const String &otaChannel) { this->otaChannel.set(ot
 
 void Settings::setSavedScale(const String &savedScale) { this->savedScale.set(savedScale); }
 
+void Settings::setSavedScaleName(const String &savedScaleName) { this->savedScaleName.set(savedScaleName); }
+
 void Settings::setBoilerFillActive(bool boiler_fill_active) { boilerFillActive.set(boiler_fill_active); }
 
 void Settings::setStartupFillTime(int startup_fill_time) { startupFillTime.set(startup_fill_time); }
@@ -144,6 +174,10 @@ void Settings::setStartupFillTime(int startup_fill_time) { startupFillTime.set(s
 void Settings::setSteamFillTime(int steam_fill_time) { steamFillTime.set(steam_fill_time); }
 
 void Settings::setSmartGrindActive(bool smart_grind_active) { smartGrindActive.set(smart_grind_active); }
+
+void Settings::setMahlkonigActive(bool mahlkonig_active) { mahlkonigActive.set(mahlkonig_active); }
+
+void Settings::setMahlkonigRecipeProfiles(String profiles) { mahlkonigRecipeProfiles.set(profiles); }
 
 void Settings::setSmartGrindIp(String smart_grind_ip) { smartGrindIp.set(smart_grind_ip); }
 
@@ -186,6 +220,26 @@ void Settings::setWarnScaleBattery(int level) { warnScaleBattery.set(clampWarnin
 
 void Settings::setWarnTemperature(int level) { warnTemperature.set(clampWarningLevel(level)); }
 
+void Settings::setWarnBackflush(int level) { warnBackflush.set(clampWarningLevel(level)); }
+
+void Settings::setWarnDescaling(int level) { warnDescaling.set(clampWarningLevel(level)); }
+
+void Settings::setBackflushIntervalDays(int days) { backflushIntervalDays.set(std::max(0, days)); }
+
+void Settings::setBackflushIntervalShots(int shots) { backflushIntervalShots.set(std::max(0, shots)); }
+
+void Settings::setDescalingIntervalWeeks(int weeks) { descalingIntervalWeeks.set(std::max(0, weeks)); }
+
+void Settings::setDescalingIntervalShots(int shots) { descalingIntervalShots.set(std::max(0, shots)); }
+
+void Settings::setLastBackflushTime(unsigned long time) { lastBackflushTime.set(time); }
+
+void Settings::setLastDescalingTime(unsigned long time) { lastDescalingTime.set(time); }
+
+void Settings::setShotsSinceBackflush(int shots) { shotsSinceBackflush.set(std::max(0, shots)); }
+
+void Settings::setShotsSinceDescaling(int shots) { shotsSinceDescaling.set(std::max(0, shots)); }
+
 void Settings::setTimezone(String timezone) { this->timezone.set(timezone); }
 
 void Settings::setClockFormat(bool clock_24h_format) { clock24hFormat.set(clock_24h_format); }
@@ -194,7 +248,7 @@ void Settings::setSelectedProfile(String selected_profile) { selectedProfile.set
 
 void Settings::setStartupProfile(String startup_profile) { startupProfile.set(startup_profile); }
 
-void Settings::setFavoritedProfiles(std::vector<String> favorited_profiles) { favoritedProfiles.set(favorited_profiles); }
+void Settings::setFavoritedProfiles(const std::vector<String> &favorited_profiles) { favoritedProfiles.set(favorited_profiles); }
 
 void Settings::addFavoritedProfile(String profile) {
     std::vector<String> profiles = favoritedProfiles.get();
@@ -240,6 +294,8 @@ void Settings::setSteamPumpPercentage(float steam_pump_percentage) { steamPumpPe
 void Settings::setSteamPumpCutoff(float steam_pump_cutoff) { steamPumpCutoff.set(steam_pump_cutoff); }
 
 void Settings::setThemeMode(int theme_mode) { themeMode.set(theme_mode); }
+
+void Settings::setStatusDisplayMode(int status_display_mode) { statusDisplayMode.set(status_display_mode); }
 
 void Settings::setHistoryIndex(int history_index) { historyIndex.set(history_index); }
 
@@ -291,14 +347,7 @@ void Settings::setIntegralGain(float integral_gain) { integralGain.set(integral_
 void Settings::setMaxPumpPower(float max_pump_power) { maxPumpPower.set(max_pump_power); }
 
 void Settings::doSave() {
-    bool dirty = false;
-    for (auto *property : registry) {
-        if (property->isDirty()) {
-            dirty = true;
-            break;
-        }
-    }
-    if (!dirty) {
+    if (std::none_of(registry.begin(), registry.end(), [](const PropertyBase *property) { return property->isDirty(); })) {
         return;
     }
     ESP_LOGI("Settings", "Saving changed settings");

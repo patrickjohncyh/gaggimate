@@ -68,6 +68,35 @@ void WebSocketHandler::setup(Controller *_controller, PluginManager *_pluginMana
         broadcastJson(doc);
     });
 
+    // BLE scale lifecycle for the Bluetooth settings tab (GM-257).
+    pluginManager->on("scale:scan:complete", [this](Event const &event) {
+        JsonDocument doc(&psramAllocator);
+        doc["tp"] = "evt:scale:scan:complete";
+        doc["count"] = event.getInt("count");
+        broadcastJson(doc);
+    });
+    pluginManager->on("scale:connect:error", [this](Event const &event) {
+        JsonDocument doc(&psramAllocator);
+        doc["tp"] = "evt:scale:connect:error";
+        doc["address"] = event.getString("address");
+        doc["reason"] = event.getString("reason");
+        broadcastJson(doc);
+    });
+    pluginManager->on("scale:connect:success", [this](Event const &event) {
+        JsonDocument doc(&psramAllocator);
+        doc["tp"] = "evt:scale:connect:success";
+        doc["address"] = event.getString("address");
+        doc["name"] = event.getString("name");
+        broadcastJson(doc);
+    });
+    pluginManager->on("scale:disconnect", [this](Event const &event) {
+        JsonDocument doc(&psramAllocator);
+        doc["tp"] = "evt:scale:disconnect";
+        doc["address"] = event.getString("address");
+        doc["name"] = event.getString("name");
+        broadcastJson(doc);
+    });
+
     // Forward shot history rebuild progress events to WebSocket clients
     pluginManager->on("evt:history-rebuild-progress", [this](Event const &event) {
         JsonDocument doc(&psramAllocator);
@@ -98,7 +127,9 @@ void WebSocketHandler::setup(Controller *_controller, PluginManager *_pluginMana
         broadcastJson(doc);
     });
 
-    // Subscribe to Bluetooth scale weight updates
+    // Subscribe to the selected scale (hardware, Bluetooth, or estimation).
+    pluginManager->on("controller:volumetric-measurement:active:change",
+                      [this](Event const &event) { this->currentActiveWeight = event.getFloat("value"); });
     pluginManager->on("controller:volumetric-measurement:bluetooth:change",
                       [this](Event const &event) { this->currentBluetoothWeight = event.getFloat("value"); });
 }
@@ -131,6 +162,16 @@ void WebSocketHandler::attach(AsyncWebServer &server) {
 }
 
 void WebSocketHandler::loop(unsigned long now) {
+    if (now - lastHardwareScaleDiagnostic >= 200 && hasClients() && controller->getSystemInfo().capabilities.hwScale) {
+        lastHardwareScaleDiagnostic = now;
+        hardwareScaleDiagnosticDoc.clear();
+        hardwareScaleDiagnosticDoc["tp"] = "evt:hardware-scale";
+        hardwareScaleDiagnosticDoc["c1"] = controller->getHardwareScaleCell1Weight();
+        hardwareScaleDiagnosticDoc["c2"] = controller->getHardwareScaleCell2Weight();
+        hardwareScaleDiagnosticDoc["c1v"] = controller->isHardwareScaleCell1Valid();
+        hardwareScaleDiagnosticDoc["c2v"] = controller->isHardwareScaleCell2Valid();
+        broadcastJson(hardwareScaleDiagnosticDoc);
+    }
     if (now > lastStatus + STATUS_PERIOD && hasClients()) {
         lastStatus = now;
         publishState(now);
@@ -245,8 +286,12 @@ void WebSocketHandler::handleWebSocketData(AsyncWebSocket *server, AsyncWebSocke
                     client->text(toWsBuffer(resp));
                 } else if (msgType == "req:flush:start") {
                     handleFlushStart(client->id(), doc);
+                } else if (msgType == "req:scale:tare") {
+                    controller->getClientController()->tare();
                 } else if (msgType == "req:flush:stop") {
                     handleFlushStop(client->id(), doc);
+                } else if (auto it = pluginRequestHandlers.find(msgType); it != pluginRequestHandlers.end()) {
+                    it->second(cid, doc);
                 }
             }
         }
@@ -323,7 +368,9 @@ void WebSocketHandler::handleProfileRequest(uint32_t clientId, JsonDocument &req
         profileManager->selectProfile(id);
     } else if (type == "req:profiles:favorite") {
         auto id = request["id"].as<String>();
-        profileManager->addFavoritedProfile(id);
+        if (!profileManager->addFavoritedProfile(id)) {
+            response["error"] = F("Favorite limit reached");
+        }
     } else if (type == "req:profiles:unfavorite") {
         auto id = request["id"].as<String>();
         profileManager->removeFavoritedProfile(id);
@@ -358,7 +405,11 @@ void WebSocketHandler::publishState(unsigned long now) {
     doc["cp"] = caps.pressure;
     doc["cd"] = caps.dimming;
     doc["gp"] = caps.hasAddon(7);
+    doc["hs"] = caps.hwScale;
+    doc["scaleSource"] = controller->getActiveScaleSourceName();
     doc["led"] = caps.ledControl;
+    doc["tofc"] = caps.tof;
+    doc["sd"] = controller->isSDCard();
     doc["tw"] = profile.getTotalVolume(); // total target weight for the process
     doc["bta"] = controller->isVolumetricAvailable() ? 1 : 0;
     doc["bt"] = controller->isVolumetricAvailable() && profile.isVolumetric() ? 1 : 0;
@@ -398,6 +449,9 @@ void WebSocketHandler::publishTelemetry() {
     statusDoc.clear();
     statusDoc["tp"] = "evt:status";
     statusDoc["ct"] = round_to(controller->getCurrentTemp(), 3);
+    statusDoc["cst"] = round_to(controller->getCurrentSteamTemp(), 3);
+    statusDoc["tst"] = controller->getTargetSteamTemp();
+    statusDoc["db"] = controller->getSystemInfo().capabilities.dualBoiler;
     statusDoc["tt"] = controller->getTargetTemp();
     statusDoc["pr"] = round_to(controller->getCurrentPressure(), 3);
     statusDoc["fl"] = round_to(controller->getCurrentPumpFlow(), 3);
@@ -417,7 +471,7 @@ void WebSocketHandler::publishTelemetry() {
     statusDoc["rtx"] = controller->getClientController()->getRetransmits(); // comms frames resent since boot
     const bool bleConnected = BLEScales.isConnected();
     statusDoc["bw"] = bleConnected ? this->currentBluetoothWeight : 0; // current bluetooth weight
-    statusDoc["cw"] = bleConnected ? this->currentBluetoothWeight : 0; // Use 'currentWeight' for forward compatbility
+    statusDoc["cw"] = this->currentActiveWeight;
     // Explicit null/zero so merging clients drop a finished process instead of keeping the last one.
     statusDoc["process"] = nullptr;
     statusDoc["pkr"] = 0;
@@ -477,6 +531,8 @@ void WebSocketHandler::publishTelemetry() {
 
     broadcastJson(statusDoc);
 }
+
+void WebSocketHandler::sendJson(uint32_t clientId, JsonDocument &doc) { ws.text(clientId, toWsBuffer(doc)); }
 
 void WebSocketHandler::broadcastJson(JsonDocument &doc) {
     if (ws.getClients().empty()) {

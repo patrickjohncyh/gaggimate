@@ -5,7 +5,11 @@
 #include <peripherals/DimmedPump.h>
 #include <peripherals/SimplePump.h>
 
+#include <peripherals/NtcThermistor.h>
 #include <utility>
+
+constexpr uint32_t ADDON_GEARPUMP = 7;
+constexpr uint32_t ADDON_HW_SCALE = 8;
 
 GaggiMateController::GaggiMateController(String version) : _version(std::move(version)) {
     configs.push_back(GM_STANDARD_REV_1X);
@@ -14,6 +18,7 @@ GaggiMateController::GaggiMateController(String version) : _version(std::move(ve
     configs.push_back(GM_PRO_REV_1x);
     configs.push_back(GM_PRO_LEGO);
     configs.push_back(GM_PRO_REV_11);
+    configs.push_back(GM_MAX_REV10);
 }
 
 char albaSwTxBuffer[128];
@@ -34,79 +39,144 @@ void GaggiMateController::setup() {
     detectBoard();
     detectAddon();
 
-    this->thermocouple = new Max31855Thermocouple(
-        _config.maxCsPin, _config.maxMisoPin, _config.maxSckPin, [this](float temperature) { /* noop */ },
-        [this]() { thermalRunawayShutdown(); });
-    this->heater = new Heater(
-        this->thermocouple, _config.heaterPin, [this]() { thermalRunawayShutdown(); },
-        [this](float Kp, float Ki, float Kd, float Kff) { _comms.sendAutotuneResult(Kp, Ki, Kd, Kff); },
-        [this]() { _comms.sendError(ERROR_CODE_AUTOTUNE_TIMEOUT); });
-    this->valve = new SimpleRelay(_config.valvePin, _config.valveOn);
-    this->alt = new SimpleRelay(_config.altPin, _config.altOn);
-    if (_config.capabilites.pressure) {
-        this->adc = new ADSAdc(_config.pressureSda, _config.pressureScl, 1);
-        this->pressureSensor = new PressureSensor(this->adc);
+    if (!_config.capabilites.dualBoiler) {
+        brewTemperature = new Max31855Thermocouple(
+            _config.maxCsPin, _config.maxMisoPin, _config.maxSckPin, [this](float temperature) { /* noop */ },
+            [this]() { thermalRunawayShutdown(); });
     }
+    if (_config.capabilites.pressure || _config.capabilites.dualBoiler) {
+        adc = new ADSAdc(_config.pressureSda, _config.pressureScl, _config.adcRates);
+        pressureSensor = new PressureSensor(this->adc, _config.pressureControlRate);
+        if (_config.capabilites.dualBoiler) {
+            this->brewTemperature = new NtcThermistor(
+                this->adc, 2, [this]() { thermalRunawayShutdown(); }, 50000.0f, 10000.0f, 4.096f, 3988.0f, _config.ntcTiming[2]);
+            this->steamTemperature = new NtcThermistor(
+                this->adc, 3, [this]() { thermalRunawayShutdown(); }, 50000.0f, 10000.0f, 4.096f, 3988.0f, _config.ntcTiming[3]);
+        }
+    }
+    heater = new Heater(
+        this->brewTemperature, _config.heaterPin, [this]() { thermalRunawayShutdown(); },
+        [this](float Kp, float Ki, float Kd, float Kf) { _comms.sendAutotuneResult(Kp, Ki, Kd, Kf); },
+        [this]() { _comms.sendError(ERROR_CODE_AUTOTUNE_TIMEOUT); });
+    if (_config.capabilites.dualBoiler) {
+        heater2 = new Heater(
+            this->steamTemperature, _config.altPin, [this]() { thermalRunawayShutdown(); },
+            [this](float Kp, float Ki, float Kd, float Kf) { _comms.sendAutotuneResult(Kp, Ki, Kd, Kf); },
+            [this]() { _comms.sendError(ERROR_CODE_AUTOTUNE_TIMEOUT); });
+        heaterCoordinator = new HeaterCoordinator(heater, heater2);
+        refill = new SimpleRelay(_config.refillPin, _config.valveOn);
+        aux = new SimpleRelay(_config.auxPin, _config.valveOn);
+        waterSense = new DigitalInput(_config.waterSensePin, [this](const bool state) { _comms.sendButtonState(3, state); }, 25);
+        lights = new SimpleRelay(_config.ledPin, HIGH);
+    } else {
+        alt = new SimpleRelay(_config.altPin, _config.altOn);
+    }
+    valve = new SimpleRelay(_config.valvePin, _config.valveOn);
     if (_config.capabilites.dimming) {
-        pump = new DimmedPump(_config.pumpPin, _config.pumpSensePin, pressureSensor);
+        pump = new DimmedPump(_config.pumpPin, _config.pumpSensePin, pressureSensor, _config.pressureControlRate);
     } else {
         pump = new SimplePump(_config.pumpPin, _config.pumpOn, _config.capabilites.ssrPump ? 1000.0f : 5000.0f);
     }
-    this->brewBtn = new DigitalInput(_config.brewButtonPin, [this](const bool state) { _comms.sendButtonState(0, state); });
-    this->steamBtn = new DigitalInput(_config.steamButtonPin, [this](const bool state) { _comms.sendButtonState(1, state); });
+    brewBtn = new DigitalInput(_config.brewButtonPin, [this](const bool state) { _comms.sendButtonState(0, state); });
+    steamBtn = new DigitalInput(_config.steamButtonPin, [this](const bool state) { _comms.sendButtonState(1, state); });
+    if (_config.waterButtonPin != 0) {
+        waterBtn = new DigitalInput(_config.waterButtonPin, [this](const bool state) { _comms.sendButtonState(2, state); });
+    }
+    this->hardwareScale = new HardwareScale(
+        _config.scaleDat0Pin, _config.scaleDat1Pin, _config.scaleClkPin,
+        [this](float weight, float cell1Weight, float cell2Weight, bool cell1Valid, bool cell2Valid) {
+            if (_comms.isConnected()) {
+                _comms.sendScaleMeasurement(weight, cell1Weight, cell2Weight, cell1Valid, cell2Valid);
+            }
+        },
+        [](float, float) {});
 
     // 4-Pin peripheral port
-    albaComms = new SoftWire(_config.sunriseSdaPin, _config.sunriseSclPin);
-    albaComms->setTxBuffer(albaSwTxBuffer, sizeof(albaSwTxBuffer));
-    albaComms->setRxBuffer(albaSwRxBuffer, sizeof(albaSwRxBuffer));
-    albaComms->setTimeout_ms(200);
-    albaComms->setDelay_us(20);
-    albaComms->begin();
-    albaBus = new SoftWireBus(albaComms);
-    this->ledController = new LedController(albaBus);
-    this->distanceSensor = new DistanceSensor(albaBus, [this](int distance) { _comms.sendTofMeasurement(distance); });
-    if (this->ledController->isAvailable()) {
-        _config.capabilites.ledControls = true;
-        _config.capabilites.tof = true;
-        _comms.onLedControl([this](uint8_t channel, uint8_t brightness) { ledController->setChannel(channel, brightness); });
+    if (!_config.capabilites.dualBoiler) {
+        albaComms = new SoftWire(_config.sunriseSdaPin, _config.sunriseSclPin);
+        albaComms->setTxBuffer(albaSwTxBuffer, sizeof(albaSwTxBuffer));
+        albaComms->setRxBuffer(albaSwRxBuffer, sizeof(albaSwRxBuffer));
+        albaComms->setTimeout_ms(200);
+        albaComms->setDelay_us(20);
+        albaComms->begin();
+        albaBus = new SoftWireBus(albaComms);
+        this->ledController = new LedController(albaBus);
+        this->distanceSensor = new DistanceSensor(albaBus, [this](int distance) { _comms.sendTofMeasurement(distance); });
+        if (this->ledController->isAvailable()) {
+            _config.capabilites.ledControls = true;
+            _config.capabilites.tof = true;
+            _comms.onLedControl([this](uint8_t channel, uint8_t brightness) { ledController->setChannel(channel, brightness); });
+        }
     }
-
+    if (!_config.capabilites.tof && _config.tankLevelPin > 0) {
+        tankLevel = new DigitalInput(_config.tankLevelPin, [this](const bool) { sendTankLevel(); }, 5);
+    }
     gm::DeviceCapabilities capabilities = gaggimate_Capabilities_init_zero;
     capabilities.dimming = _config.capabilites.dimming;
     capabilities.pressure = _config.capabilites.pressure;
-    capabilities.tof = _config.capabilites.tof;
+    capabilities.tof = _config.capabilites.tof || _config.tankLevelPin > 0;
     capabilities.led_control = _config.capabilites.ledControls;
+    capabilities.dual_boiler = _config.capabilites.dualBoiler;
+
+    this->hardwareScale->setup();
+
+    auto addAddon = [&capabilities](uint32_t type) {
+        const auto maxAddons = sizeof(capabilities.addons) / sizeof(capabilities.addons[0]);
+        if (capabilities.addons_count >= maxAddons) {
+            return;
+        }
+        capabilities.addons[capabilities.addons_count] = gaggimate_Addon_init_zero;
+        capabilities.addons[capabilities.addons_count].type = type;
+        capabilities.addons_count++;
+    };
     if (this->gearpumpAddon != nullptr) {
-        capabilities.addons_count = 1;
-        capabilities.addons[0] = gaggimate_Addon_init_zero;
-        capabilities.addons[0].type = 7;
+        addAddon(ADDON_GEARPUMP);
     }
+    if (this->hardwareScale->isAvailable()) {
+        addAddon(ADDON_HW_SCALE);
+    }
+
     // Steam switch held at power-on opens the BLE pairing window; read it here since steamBtn->setup() runs later.
     _comms.init("GPBLS", _config.name.c_str(), _version, capabilities, isSteamSwitchOn());
 
     if (_config.capabilites.ledControls) {
-        this->ledController->setup();
+        ledController->setup();
     }
     if (_config.capabilites.tof) {
-        this->distanceSensor->setup();
+        distanceSensor->setup();
     }
 
-    this->thermocouple->setup();
-    this->heater->setup();
-    this->valve->setup();
-    this->alt->setup();
-    this->pump->setup();
     if (this->gearpumpAddon != nullptr) {
         this->gearpumpAddon->setup(this->pump->getPumpPowerPtr());
         auto dimmedPump = static_cast<DimmedPump *>(pump);
         dimmedPump->setBinaryMode(true);
     }
-    this->brewBtn->setup();
-    this->steamBtn->setup();
-    if (_config.capabilites.pressure) {
-        this->adc->setup();
+    if (_config.capabilites.pressure || _config.capabilites.dualBoiler) {
         pressureSensor->setup();
+        this->adc->setup();
         _comms.onPressureScale([this](float scale) { this->pressureSensor->setScale(scale); });
+    }
+    brewTemperature->setup();
+    heater->setup();
+    valve->setup();
+    pump->setup();
+    brewBtn->setup();
+    steamBtn->setup();
+    if (waterBtn != nullptr) {
+        waterBtn->setup();
+    }
+    if (_config.capabilites.dualBoiler) {
+        steamTemperature->setup();
+        heater2->setup();
+        refill->setup();
+        aux->setup();
+        waterSense->setup();
+        lights->setup();
+    } else {
+        alt->setup();
+    }
+    if (tankLevel != nullptr) {
+        tankLevel->setup();
     }
     // Set up thermal feedforward for main heater if pressure/dimming capability exists
     if (heater && _config.capabilites.dimming && _config.capabilites.pressure) {
@@ -124,16 +194,19 @@ void GaggiMateController::setup() {
     // arrives independently (or batched together in one frame for an atomic
     // update). Control messages feed the connection watchdog via handlePing().
     _comms.onBoilerControl([this](uint8_t index, BoilerControlMode mode, float setpoint) {
-        if (index != 0) { // single boiler today; reject unknown devices
-            ESP_LOGW(LOG_TAG, "Ignoring boiler control for unsupported index %u", index);
+        if (!_config.capabilites.dualBoiler && index > 0) {
             return;
         }
+        if (_config.capabilites.dualBoiler && index == 0) {
+            lights->set(index == 0 && setpoint > 0.0f);
+        }
+        Heater *target = index == 0 ? this->heater : this->heater2;
         handlePing();
         if (errorState != ERROR_CODE_NONE) {
             return;
         }
         if (mode == BoilerControlMode::Temperature) {
-            this->heater->setSetpoint(setpoint);
+            target->setSetpoint(setpoint);
         } else {
             // Pressure-regulated boiler not supported by this hardware yet.
             ESP_LOGW(LOG_TAG, "Boiler pressure mode requested but unsupported");
@@ -167,20 +240,33 @@ void GaggiMateController::setup() {
             dimmedPump->setFlowTarget(flow, pressure);
         }
     });
-    // Binary outputs: index 0 = brew valve, index 1 = alt relay.
+    // Binary outputs: index 0 = brew valve, index 1 = alt relay,
+    // index 2 = steam refill, index 3 = steam-pressure hot-water valve.
     _comms.onRelayControl([this](uint8_t index, bool open) {
-        if (index == 1) {
+        handlePing();
+        if (errorState != ERROR_CODE_NONE) {
+            return;
+        }
+        if (_config.capabilites.dualBoiler) {
+            switch (index) {
+            case 2:
+                this->refill->set(open);
+                return;
+            case 3:
+                this->aux->set(open);
+                return;
+            default:
+                // noop
+                break;
+            }
+        } else if (index == 1) {
             // Alt relay: independent function, no watchdog/error gating (matches
             // the previous dedicated alt-control path).
             this->alt->set(open);
             return;
         }
-        if (index != 0) { // only 0 (brew valve) and 1 (alt) exist
+        if (index != 0) {
             ESP_LOGW(LOG_TAG, "Ignoring relay control for unsupported index %u", index);
-            return;
-        }
-        handlePing();
-        if (errorState != ERROR_CODE_NONE) {
             return;
         }
         this->valve->set(open);
@@ -188,11 +274,16 @@ void GaggiMateController::setup() {
             static_cast<DimmedPump *>(pump)->setValveState(open);
         }
     });
-    _comms.onPidSettings([this](float Kp, float Ki, float Kd, float Kf) {
-        this->heater->setTunings(Kp, Ki, Kd);
-
-        // Apply thermal feedforward parameters if available
-        this->heater->setFeedforwardScale(Kf);
+    // Heaters stay off until the display delivers these; coordination is applied before the gains enable heating.
+    _comms.onHeaterSettings([this](const gm::HeaterSettings &settings) {
+        if (heaterCoordinator != nullptr) {
+            heaterCoordinator->configure(settings.heater_coordination_enabled, settings.handover_ms);
+        }
+        heater->setFeedforwardScale(settings.kf);
+        heater->setTunings(settings.kp, settings.ki, settings.kd);
+        if (heater2 != nullptr) {
+            heater2->setTunings(settings.kp, settings.ki, settings.kd);
+        }
     });
     _comms.onPumpSettings([this](gm::PumpSettings settings) {
         if (_config.capabilites.dimming) {
@@ -215,6 +306,12 @@ void GaggiMateController::setup() {
         }
     });
     _comms.onPing([this]() { handlePing(); });
+    // A new link gets a full ping window; a stale lastPingTime would trip the watchdog while the display is still
+    // discovering services. errorState is left alone so a timed-out session only recovers on a real ping.
+    _comms.onConnectionChange([this](bool connected) {
+        if (connected)
+            lastPingTime = millis();
+    });
     _comms.onAutotune([this](uint32_t testTimeSec, uint32_t windowSize, uint32_t heaterWattage) {
         handlePing();
         if (errorState != ERROR_CODE_NONE) { // don't re-engage the heater while faulted
@@ -223,17 +320,36 @@ void GaggiMateController::setup() {
         this->heater->autotune(static_cast<int>(testTimeSec), static_cast<int>(windowSize), static_cast<int>(heaterWattage));
     });
     _comms.onTare([this]() {
+        if (hardwareScale != nullptr && hardwareScale->isAvailable()) {
+            hardwareScale->tare();
+        }
         if (!_config.capabilites.dimming) {
             return;
         }
         auto dimmedPump = static_cast<DimmedPump *>(pump);
         dimmedPump->tare();
     });
+    _comms.onScaleFactors(
+        [this](float scaleFactor1, float scaleFactor2, uint16_t sampleRateSps, float idleFilterAlpha, float activeFilterAlpha) {
+            if (hardwareScale == nullptr || !hardwareScale->isAvailable()) {
+                return;
+            }
+            hardwareScale->setConfiguration(scaleFactor1, scaleFactor2, sampleRateSps, idleFilterAlpha, activeFilterAlpha);
+        });
     ESP_LOGI(LOG_TAG, "Initialization done");
 }
 
 void GaggiMateController::loop() {
     unsigned long now = millis();
+
+    // Keep zero tracking and idle display quantization out of the measurement
+    // path whenever the brew valve or pump can be adding liquid to the cup.
+    if (hardwareScale != nullptr) {
+        const float pumpPower = pump != nullptr && pump->getPumpPowerPtr() != nullptr ? *pump->getPumpPowerPtr() : 0.0f;
+        const bool scaleActivity = (valve != nullptr && valve->getState()) || pumpPower > 0.01f;
+        hardwareScale->setBrewingActive(scaleActivity);
+    }
+
     if (lastPingTime < now && (now - lastPingTime) / 1000 > PING_TIMEOUT_SECONDS) {
         handlePingTimeout();
     }
@@ -241,6 +357,9 @@ void GaggiMateController::loop() {
     if (_config.capabilites.ledControls && now - lastLedHealthCheck >= LED_HEALTH_CHECK_INTERVAL_MS) {
         lastLedHealthCheck = now;
         ledController->healthCheck();
+    }
+    if (tankLevel != nullptr && now - lastTankLevelSend >= TANK_LEVEL_SEND_INTERVAL_MS) {
+        sendTankLevel();
     }
     if (errorState != ERROR_CODE_NONE) {
         ESP_LOGW("GaggiMateController", "Error state: %d", errorState);
@@ -252,6 +371,12 @@ void GaggiMateController::loop() {
             handleSerialCommand(c);
         }
     }
+}
+
+// Reed switch closed (state true) means water present, so report a full-tank distance.
+void GaggiMateController::sendTankLevel() {
+    lastTankLevelSend = millis();
+    _comms.sendTofMeasurement(tankLevel->getState() ? 10 : 1000);
 }
 
 void GaggiMateController::registerBoardConfig(ControllerConfig config) { configs.push_back(config); }
@@ -307,10 +432,16 @@ void GaggiMateController::handlePing() {
 
 void GaggiMateController::handlePingTimeout() {
     // Turn off the heater and pump as a safety measure
-    this->heater->setSetpoint(0);
+    this->heater->stop();
     this->pump->setPower(0);
     this->valve->set(false);
-    this->alt->set(false);
+    if (_config.capabilites.dualBoiler) {
+        this->heater2->stop();
+        this->refill->set(false);
+        this->aux->set(false);
+    } else {
+        this->alt->set(false);
+    }
     // On the healthy->timeout transition, drop the BLE link. An in-band error
     // notify can be silently swallowed on a wedged GATT (the failure mode this
     // is here to recover from), but LL_TERMINATE_IND propagates reliably at
@@ -329,10 +460,16 @@ void GaggiMateController::handlePingTimeout() {
 void GaggiMateController::thermalRunawayShutdown() {
     ESP_LOGE(LOG_TAG, "Thermal runaway detected! Turning off heater and pump!\n");
     // Turn off the heater and pump immediately
-    this->heater->setSetpoint(0);
+    this->heater->stop();
     this->pump->setPower(0);
     this->valve->set(false);
-    this->alt->set(false);
+    if (_config.capabilites.dualBoiler) {
+        this->heater2->stop();
+        this->refill->set(false);
+        this->aux->set(false);
+    } else {
+        this->alt->set(false);
+    }
     errorState = ERROR_CODE_RUNAWAY;
     _comms.sendError(ERROR_CODE_RUNAWAY);
 }
@@ -340,16 +477,15 @@ void GaggiMateController::thermalRunawayShutdown() {
 void GaggiMateController::sendSensorData() {
     const float pumpPower = *pump->getPumpPowerPtr();
     const float heaterPower = heater ? heater->getDutyCycle() : 0.0f;
+    float puckFlow = 0.0f;
+    float pumpFlow = 0.0f;
+    float puckResistance = 0.0f;
+    float pressure = 0.0f;
+    float waterPumped = 0.0f;
+    gm::Payload batch[2];
+    size_t n = 0;
     if (_config.capabilites.pressure) {
-        // Flow/volumetric come from the DimmedPump; only cast when this board
-        // actually has one (pressure and dimming are configured independently).
-        float puckFlow = 0.0f;
-        float pumpFlow = 0.0f;
-        float puckResistance = 0.0f;
-        float waterPumped = 0.0f;
-        // Sensor + (optional) volumetric ride in one frame.
-        gm::Payload batch[2];
-        size_t n = 0;
+        pressure = pressureSensor->getPressure();
         if (_config.capabilites.dimming) {
             auto dimmedPump = static_cast<DimmedPump *>(pump);
             puckFlow = dimmedPump->getPuckFlow();
@@ -360,12 +496,26 @@ void GaggiMateController::sendSensorData() {
                 batch[n++] = _comms.buildVolumetricMeasurement(dimmedPump->getCoffeeVolume());
             }
         }
-        batch[n++] = _comms.buildSensorData(this->thermocouple->read(), this->pressureSensor->getPressure(), puckFlow, pumpFlow,
-                                            puckResistance, pumpPower, heaterPower, waterPumped);
-        _comms.sendUnreliableBatch(batch, n); // telemetry: fire-and-forget
-    } else {
-        _comms.sendSensorData(this->thermocouple->read(), 0.0f, 0.0f, 0.0f, 0.0f, pumpPower, heaterPower);
     }
+    gm::Payload p = gaggimate_Payload_init_zero;
+    p.which_content = gaggimate_Payload_sensor_tag;
+    p.content.sensor.boilers_count = _config.capabilites.dualBoiler ? 2 : 1; // boiler 0; schema allows more
+    p.content.sensor.boilers[0].index = 0;
+    p.content.sensor.boilers[0].temperature = this->brewTemperature->read();
+    p.content.sensor.boilers[0].pressure = pressure;
+    p.content.sensor.boilers[0].power = heaterPower;
+    if (_config.capabilites.dualBoiler) {
+        p.content.sensor.boilers[1].index = 1;
+        p.content.sensor.boilers[1].temperature = this->steamTemperature->read();
+        p.content.sensor.boilers[1].pressure = 0.0f;
+    }
+    p.content.sensor.puck_flow = puckFlow;
+    p.content.sensor.pump_flow = pumpFlow;
+    p.content.sensor.puck_resistance = puckResistance;
+    p.content.sensor.pump_power = pumpPower;
+    p.content.sensor.water_pumped = waterPumped;
+    batch[n++] = p;
+    _comms.sendUnreliableBatch(batch, n);
 }
 
 void GaggiMateController::handleSerialCommand(char c) {
@@ -377,7 +527,7 @@ void GaggiMateController::handleSerialCommand(char c) {
         ESP_LOGI("Controller", "║");
         ESP_LOGI("Controller", "╠═ Error codes");
         ESP_LOGI("Controller", "║  ├─ Controller Error: %d", errorState);
-        ESP_LOGI("Controller", "║  └─ Thermocouple Error: %d", thermocouple->isErrorState());
+        ESP_LOGI("Controller", "║  └─ Thermocouple Error: %d", brewTemperature->isErrorState());
         ESP_LOGI("Controller", "║");
         ESP_LOGI("Controller", "╠═ Readings");
         if (_config.capabilites.pressure) {
@@ -386,13 +536,23 @@ void GaggiMateController::handleSerialCommand(char c) {
             ESP_LOGI("Controller", "║  ├─ Flow: %.2f", dimmedPump->getPumpFlow());
             ESP_LOGI("Controller", "║  ├─ Pump Power: %.2f", dimmedPump->getPowerTarget());
         }
-        ESP_LOGI("Controller", "║  └─ Temperature: %.2f", thermocouple->read());
+        if (_config.capabilites.dualBoiler) {
+            ESP_LOGI("Controller", "║  ├─ Steam Boiler Low: %.2f", waterSense->getState());
+            ESP_LOGI("Controller", "║  ├─ Temperature2: %.2f", steamTemperature->read());
+        }
+        ESP_LOGI("Controller", "║  └─ Temperature: %.2f", brewTemperature->read());
         ESP_LOGI("Controller", "║");
         ESP_LOGI("Controller", "╠═ Control");
+        if (_config.capabilites.dualBoiler) {
+            ESP_LOGI("Controller", "║  ├─ Refill: %d", refill->getState());
+            ESP_LOGI("Controller", "║  ├─ Aux: %d", aux->getState());
+            ESP_LOGI("Controller", "║  ├─ Steam Temperature: %d", heater2->getSetpoint());
+        }
         if (_config.capabilites.pressure) {
             auto dimmedPump = static_cast<DimmedPump *>(pump);
             ESP_LOGI("Controller", "║  ├─ Pressure: %.2f", dimmedPump->getPressureTarget());
             ESP_LOGI("Controller", "║  ├─ Flow: %.2f", dimmedPump->getFlowTarget());
+            ESP_LOGI("Controller", "║  ├─ Pump Power: %.2f", dimmedPump->getPowerTarget());
             ESP_LOGI("Controller", "║  ├─ Pump Power: %.2f", dimmedPump->getPowerTarget());
         }
         ESP_LOGI("Controller", "║  └─ Temperature: %.2f", heater->getSetpoint());

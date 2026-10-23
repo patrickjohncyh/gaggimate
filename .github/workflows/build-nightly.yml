@@ -43,9 +43,12 @@ jobs:
           mkdir -p upload/controller
           git tag -d nightly
           git tag -d db
-          git describe --tags --dirty > out/version.txt
+          git describe --tags --dirty --match "v*" > out/version.txt
       - name: Build Web
         run: ./scripts/build_webui.sh
+      - name: Package app web bundle
+        # Live update for the native app (web/src/app/updates.js), attached to the same release as the firmware.
+        run: BUNDLE_VERSION="$(cat out/version.txt)" web/scripts/package-app-bundle.sh out "nightly"
       - name: Build controller
         run: |
           export PLATFORMIO_BUILD_FLAGS="'-DNIGHTLY_BUILD'"

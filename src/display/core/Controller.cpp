@@ -17,10 +17,13 @@
 #include <display/core/zones.h>
 #include <display/plugins/AutoWakeupPlugin.h>
 #include <display/plugins/BoilerFillPlugin.h>
+#include <display/plugins/CleaningSchedulePlugin.h>
 #include <display/plugins/LedControlPlugin.h>
 #include <display/plugins/ShotHistoryPlugin.h>
 #include <display/plugins/SmartGrindPlugin.h>
 #include <display/plugins/WebUIPlugin.h>
+#include <display/plugins/mahlkonig/MahlkonigPlugin.h>
+#include <display/util/FsUtil.h>
 #ifndef GAGGIMATE_SIM // network/BLE plugins are device-only
 #include <display/plugins/BLEScalePlugin.h>
 #include <display/plugins/HomekitPlugin.h>
@@ -43,6 +46,12 @@
 #endif
 
 const String LOG_TAG = F("Controller");
+constexpr uint32_t ADDON_HW_SCALE = 8;
+constexpr double DISPLAY_NEGATIVE_WEIGHT_THRESHOLD = -0.1;
+
+float normalizeWeightForDisplay(double measurement) {
+    return measurement <= 0.0 && measurement > DISPLAY_NEGATIVE_WEIGHT_THRESHOLD ? 0.0f : static_cast<float>(measurement);
+}
 
 void Controller::setup() {
     mode = MODE_STANDBY;
@@ -69,6 +78,7 @@ void Controller::setup() {
         sdcard = true;
         ESP_LOGI(LOG_TAG, "SD Card detected and mounted");
         ESP_LOGI(LOG_TAG, "Used: %lluMB, Capacity: %lluMB", SD_MMC.usedBytes() / 1024 / 1024, SD_MMC.cardSize() / 1024 / 1024);
+        seedSDCard();
     }
 #endif
     FS *fs = &LittleFS;
@@ -95,6 +105,9 @@ void Controller::setup() {
     }
 #endif
     pluginManager->registerPlugin(new WebUIPlugin());
+    if (settings.isMahlkonigActive()) {
+        pluginManager->registerPlugin(new MahlkonigPlugin());
+    }
 #ifndef GAGGIMATE_SIM // WiFi watchdogs and BLE scales are device-only
     pluginManager->registerPlugin(new NetworkWatchdogPlugin());
     pluginManager->registerPlugin(new WifiStaWatchdogPlugin());
@@ -106,6 +119,7 @@ void Controller::setup() {
 #endif
     pluginManager->registerPlugin(new LedControlPlugin());
     pluginManager->registerPlugin(new AutoWakeupPlugin());
+    pluginManager->registerPlugin(new CleaningSchedulePlugin());
     pluginManager->setup(this);
 
     pluginManager->on("profiles:profile:save", [this](Event const &event) {
@@ -152,6 +166,29 @@ void Controller::connect() {
 // NVS values for the cached panel detection result (GM-140) — only append, never renumber
 enum PanelModel : uint8_t { PANEL_UNKNOWN = 0, PANEL_LILYGO = 1, PANEL_AMOLED = 2, PANEL_WAVESHARE = 3 };
 
+// Hidden, so an interrupted copy still counts as an empty card and is retried on next boot.
+static constexpr const char *SD_SEED_MARKER = "/.gm-seeding";
+
+void Controller::seedSDCard() {
+    if (!fs_util::isEmptyVolume(SD_MMC) && !SD_MMC.exists(SD_SEED_MARKER))
+        return;
+    ESP_LOGI(LOG_TAG, "Empty SD card, copying data from internal flash");
+    File marker = SD_MMC.open(SD_SEED_MARKER, "w");
+    if (marker)
+        marker.close();
+    bool ok = true;
+    for (const char *dir : {"/p", "/h"}) {
+        if (LittleFS.exists(dir))
+            ok = fs_util::copyTree(LittleFS, SD_MMC, dir) && ok;
+    }
+    if (ok) {
+        SD_MMC.remove(SD_SEED_MARKER);
+        ESP_LOGI(LOG_TAG, "SD card seeded from internal flash");
+    } else {
+        ESP_LOGE(LOG_TAG, "Failed to seed SD card from internal flash, retrying next boot");
+    }
+}
+
 void Controller::setupPanel() {
 #ifdef GAGGIMATE_SIM
     driver = SdlDriver::getInstance(); // desktop SDL panel
@@ -194,6 +231,13 @@ void Controller::setupPanel() {
             delay(10000);
             ESP.restart();
         }
+    }
+    if (driver != nullptr && model == PANEL_AMOLED) {
+        ESP_LOGI(LOG_TAG, "AMOLED/OLED driver loaded, setting indicators visibility to inside position");
+        gaugeSetpointsInside = true;
+    } else {
+        ESP_LOGI(LOG_TAG, "Default LCD / LillyGo driver loaded, setting indicators visibility to outside position");
+        gaugeSetpointsInside = false;
     }
     driver->init();
     panelPrefs.putUChar("driver", model);
@@ -239,8 +283,8 @@ void Controller::setupBluetooth() {
         }
     });
     comms.onSystemInfo([this](const char *hardware, const char *version, uint32_t protocolVersion, bool dimming, bool pressure,
-                              bool ledControl, bool tof, vector<uint32_t> addons) {
-        onSystemInfo(hardware, version, protocolVersion, dimming, pressure, ledControl, tof, addons);
+                              bool ledControl, bool tof, bool dualBoiler, vector<uint32_t> addons) {
+        onSystemInfo(hardware, version, protocolVersion, dimming, pressure, ledControl, tof, dualBoiler, addons);
     });
     comms.onIncompatibleController([this](const String &info) { onIncompatibleController(info); });
     pluginManager->on("ota:update:start", [this](Event const &event) {
@@ -251,10 +295,12 @@ void Controller::setupBluetooth() {
         }
     });
     pluginManager->on("ota:update:end", [this](Event const &) { applyConnectionPriority(true); });
-    comms.onSensorData([this](float temp, float pressure, float puckFlow, float pumpFlow, float puckResistance, float pumpPower,
-                              float heaterPower, float waterPumped) {
+    pluginManager->on("history:shot:recorded", [this](Event const &) { comms.tare(); });
+    comms.onSensorData([this](float temp, float temp2, float pressure, float puckFlow, float pumpFlow, float puckResistance,
+                              float pumpPower, float heaterPower, float waterPumped) {
         onTempRead(temp);
         onPressureRead(pressure);
+        this->currentSteamTemp = temp2;
         this->currentPuckFlow = puckFlow;
         this->currentPumpFlow = pumpFlow;
         this->currentPumpPower = pumpPower;
@@ -267,6 +313,11 @@ void Controller::setupBluetooth() {
         pluginManager->trigger("pump:volume:change", "value", waterPumped);
     });
     comms.onButtonState([this](uint8_t index, bool pressed) {
+        if (index == 3) {
+            ESP_LOGI("Controller", "Boiler water level changed: %d", pressed);
+            steamBoilerLow = pressed;
+            return;
+        }
         ESP_LOGV(LOG_TAG, "Button %d changed to %d", index, pressed);
         buttons.setConfig(buttonConfig()); // settings may have changed since the last edge
         buttons.onRawState(index, pressed, millis());
@@ -307,8 +358,23 @@ void Controller::setupBluetooth() {
         pluginManager->trigger("controller:autotune:result");
         autotuning = false;
     });
-    comms.onVolumetricMeasurement(
-        [this](float value) { onVolumetricMeasurement(value, VolumetricMeasurementSource::FLOW_ESTIMATION); });
+    comms.onVolumetricMeasurement([this](float value) {
+        // The controller's volumetric channel now carries only the pump-derived
+        // flow estimate; the hardware scale reports via onScaleMeasurement below.
+        onVolumetricMeasurement(value, VolumetricMeasurementSource::FLOW_ESTIMATION);
+    });
+    comms.onScaleMeasurement([this](float value, float cell1Weight, float cell2Weight, bool cell1Valid, bool cell2Valid) {
+        hardwareScaleCell1Weight.store(normalizeWeightForDisplay(cell1Weight));
+        hardwareScaleCell2Weight.store(normalizeWeightForDisplay(cell2Weight));
+        hardwareScaleCell1Valid.store(cell1Valid);
+        hardwareScaleCell2Valid.store(cell2Valid);
+        // An unavailable/faulted controller-side scale sends invalid cell flags.
+        // Do not treat that sentinel message as fresh weight data; otherwise the
+        // display-side health timeout can never expire.
+        if (cell1Valid && cell2Valid) {
+            onVolumetricMeasurement(value, VolumetricMeasurementSource::HARDWARE);
+        }
+    });
     comms.onTofMeasurement([this](uint32_t value) {
         tofDistance = static_cast<int>(value);
         ESP_LOGV(LOG_TAG, "Received new TOF distance: %d", tofDistance);
@@ -318,7 +384,7 @@ void Controller::setupBluetooth() {
 }
 
 void Controller::onSystemInfo(const char *hardware, const char *version, uint32_t protocolVersion, bool dimming, bool pressure,
-                              bool ledControl, bool tof, vector<uint32_t> addons) {
+                              bool ledControl, bool tof, bool dualBoiler, vector<uint32_t> addons) {
     const bool mismatch = protocolVersion != gm_proto::PROTOCOL_VERSION;
     systemInfo = SystemInfo{.hardware = String(hardware),
                             .version = String(version),
@@ -328,19 +394,22 @@ void Controller::onSystemInfo(const char *hardware, const char *version, uint32_
                                     .pressure = pressure,
                                     .ledControl = ledControl,
                                     .tof = tof,
+                                    .dualBoiler = dualBoiler,
                                     .addons = addons,
                                 },
                             .protocolVersion = protocolVersion,
                             .protocolMismatch = mismatch};
-    ESP_LOGI(LOG_TAG, "System info: %s %s (proto=%u local=%u dm=%d ps=%d led=%d tof=%d)", hardware, version, protocolVersion,
-             gm_proto::PROTOCOL_VERSION, dimming, pressure, ledControl, tof);
+    systemInfo.capabilities.hwScale = systemInfo.capabilities.hasAddon(ADDON_HW_SCALE);
+    ESP_LOGI(LOG_TAG, "System info: %s %s (proto=%u local=%u dm=%d ps=%d led=%d tof=%d, db=%d)", hardware, version,
+             protocolVersion, gm_proto::PROTOCOL_VERSION, dimming, pressure, ledControl, tof, dualBoiler);
     if (mismatch) {
         ESP_LOGW(LOG_TAG, "Protocol version mismatch: controller=%u display=%u -- control inhibited, OTA only", protocolVersion,
                  gm_proto::PROTOCOL_VERSION);
         pluginManager->trigger("controller:protocol:mismatch", "value", static_cast<int>(protocolVersion));
     } else {
         setPressureScale();
-        setPidSettings();
+        setScaleFactors();
+        setHeaterSettings();
         setPumpModelCoeffs();
         configResendUntil = millis() + CONFIG_RESEND_WINDOW_MS;
         lastConfigResend = millis();
@@ -364,7 +433,7 @@ void Controller::onIncompatibleController(const String &infoJson) {
     DeserializationError err = deserializeJson(doc, infoJson);
     if (err) {
         ESP_LOGW(LOG_TAG, "Incompatible controller, no readable info (%s)", err.c_str());
-        onSystemInfo("Legacy controller", "0.0.0", 0, false, false, false, false, {});
+        onSystemInfo("Legacy controller", "0.0.0", 0, false, false, false, false, false, {});
         return;
     }
     String hardware = doc["hw"].as<String>();
@@ -374,7 +443,8 @@ void Controller::onIncompatibleController(const String &infoJson) {
     if (version.isEmpty())
         version = "0.0.0";
     onSystemInfo(hardware.c_str(), version.c_str(), 0, doc["cp"]["dm"].as<bool>(), doc["cp"]["ps"].as<bool>(),
-                 doc["cp"]["led"].as<bool>(), doc["cp"]["tof"].as<bool>(), {});
+                 doc["cp"]["led"].as<bool>(), doc["cp"]["tof"].as<bool>(), false, {});
+    systemInfo.capabilities.hwScale = doc["cp"]["hs"].as<bool>();
 }
 
 void Controller::setupWifi() {
@@ -521,7 +591,7 @@ void Controller::loop() {
     // and a spurious ACK then stops the reliable layer retrying. Re-send until it lands.
     if (comms.isConnected() && now < configResendUntil && (now - lastConfigResend) >= CONFIG_RESEND_INTERVAL_MS) {
         setPressureScale();
-        setPidSettings();
+        setHeaterSettings();
         setPumpModelCoeffs();
         lastConfigResend = now;
     }
@@ -689,9 +759,9 @@ String Controller::getSystemStateMessage() const {
 
 bool Controller::isVolumetricAvailable() const {
 #ifdef NIGHTLY_BUILD
-    return isBluetoothScaleHealthy() || systemInfo.capabilities.dimming;
+    return isBluetoothScaleHealthy() || isHardwareScaleHealthy() || systemInfo.capabilities.dimming;
 #else
-    return isBluetoothScaleHealthy();
+    return isBluetoothScaleHealthy() || isHardwareScaleHealthy();
 #endif
 }
 
@@ -746,6 +816,12 @@ void Controller::applyConnectionPriority(bool force) {
 
 float Controller::getTargetTemp() const {
     switch (mode) {
+    case MODE_STEAM:
+        // Dual boilers keep the brew boiler at brew temp while steaming.
+        if (!systemInfo.capabilities.dualBoiler) {
+            return settings.getTargetSteamTemp();
+        }
+        [[fallthrough]];
     case MODE_BREW:
     case MODE_GRIND: {
         std::lock_guard<std::recursive_mutex> guard(processMutex);
@@ -756,13 +832,18 @@ float Controller::getTargetTemp() const {
         }
         return profileManager->getSelectedProfile().temperature;
     }
-    case MODE_STEAM:
-        return settings.getTargetSteamTemp();
     case MODE_WATER:
         return settings.getTargetWaterTemp();
     default:
         return 0;
     }
+}
+
+float Controller::getTargetSteamTemp() const {
+    if (mode != MODE_STANDBY) {
+        return settings.getTargetSteamTemp();
+    }
+    return 0.0f;
 }
 
 void Controller::setTargetTemp(float temperature) {
@@ -789,6 +870,24 @@ void Controller::setPressureScale(void) {
     }
 }
 
+void Controller::setScaleFactors() {
+    if (!systemInfo.capabilities.hwScale) {
+        return;
+    }
+
+    const float scaleFactor1 = settings.getScaleFactor1();
+    const float scaleFactor2 = settings.getScaleFactor2();
+
+    if (!std::isfinite(scaleFactor1) || !std::isfinite(scaleFactor2) || std::abs(scaleFactor1) < 0.001f ||
+        std::abs(scaleFactor2) < 0.001f) {
+        ESP_LOGW(LOG_TAG, "Skipping invalid scale factors: %.3f, %.3f", scaleFactor1, scaleFactor2);
+        return;
+    }
+
+    comms.sendScaleFactors(scaleFactor1, scaleFactor2, settings.getHardwareScaleSampleRateSps(),
+                           settings.getHardwareScaleIdleAlpha(), settings.getHardwareScaleActiveAlpha());
+}
+
 void Controller::setPumpModelCoeffs(void) {
     if (systemInfo.capabilities.dimming) {
         // Default missing coeffs to NaN so a two-value "a,b" string keeps its
@@ -809,10 +908,11 @@ void Controller::setPumpModelCoeffs(void) {
     }
 }
 
-void Controller::setPidSettings() {
+void Controller::setHeaterSettings() {
     float pid[4];
     parseFloatCsv(settings.getPid(), pid, 4, 0.0f);
-    comms.sendPidSettings(pid[0], pid[1], pid[2], pid[3]);
+    comms.sendHeaterSettings(pid[0], pid[1], pid[2], pid[3], settings.isHeaterCoordinationEnabled(),
+                             static_cast<uint32_t>(settings.getHeaterHandoverMs()));
 }
 
 int Controller::getTargetGrindDuration() const { return settings.getTargetGrindDuration(); }
@@ -839,6 +939,18 @@ void Controller::lowerTemp() {
     float temp = getTargetTemp();
     temp = constrain(temp - 1.0f, MIN_TEMP, MAX_TEMP);
     setTargetTemp(temp);
+}
+
+void Controller::raiseSteamTemp() {
+    float temp = getTargetSteamTemp();
+    temp = constrain(temp + 1.0f, MIN_TEMP, MAX_TEMP);
+    settings.setTargetSteamTemp(static_cast<int>(temp));
+}
+
+void Controller::lowerSteamTemp() {
+    float temp = getTargetSteamTemp();
+    temp = constrain(temp - 1.0f, MIN_TEMP, MAX_TEMP);
+    settings.setTargetSteamTemp(static_cast<int>(temp));
 }
 
 void Controller::raiseBrewTarget() {
@@ -945,13 +1057,61 @@ void Controller::updateControl() {
                 relay.open = brewProcess->isRelayActive();
                 pump.mode = pressureTarget ? PumpControlMode::Pressure : PumpControlMode::Flow;
                 // Mushroom-valve machines lose the cracking pressure before the puck; command the sensor-side value
-                pump.pressure = brewProcess->getPumpPressure() + settings.getPressureOffset();
+                pump.pressure = brewProcess->getPumpPressure();
+                if (pump.pressure > 0.0f) {
+                    pump.pressure += settings.getPressureOffset();
+                }
                 pump.flow = brewProcess->getPumpFlow();
                 targetPressure = brewProcess->getPumpPressure();
                 targetFlow = brewProcess->getPumpFlow();
                 handled = true;
             }
         }
+    }
+
+    // Only send components that changed since the last update. The controller is
+    // stateful and every message is acknowledged, so re-sending unchanged values
+    // each cycle is unnecessary; a periodic ping (see loop()) keeps the watchdog
+    // fed when nothing changes. controlStateSent is cleared to force a full resend.
+    gm::Payload batch[8];
+    size_t count = 0;
+    const bool full = !controlStateSent.exchange(true); // claim the flag first so a concurrent reset is never lost
+    if (full || boiler != lastBoiler)
+        batch[count++] = comms.buildBoilerControl(boiler.index, boiler.mode, boiler.setpoint);
+
+    if (systemInfo.capabilities.dualBoiler) {
+        float targetSteamTemp = getTargetSteamTemp();
+        BoilerCommand boiler2;
+        boiler2.index = 1;
+        boiler2.setpoint = targetSteamTemp;
+        RelayCommand refill; // index 2 = refill valve
+        refill.index = 2;
+        RelayCommand water; // index 3 = steam-pressure hot-water valve
+        water.index = 3;
+
+        // On dual-boiler machines, steam pressure supplies the hot water. Opening
+        // the dedicated valve must not start the brew pump or create a PumpProcess.
+        water.open = waterValveActive;
+
+        if (!active && mode != MODE_STANDBY && steamBoilerLow) {
+            targetPressure = 0.0f;
+            targetFlow = 0.0f;
+            relay.open = false;
+            pump.mode = PumpControlMode::Power;
+            pump.power = 100;
+            refill.open = true;
+            handled = true;
+        }
+
+        if (full || boiler2 != lastBoiler2)
+            batch[count++] = comms.buildBoilerControl(boiler2.index, boiler2.mode, boiler2.setpoint);
+        if (full || refill != lastRefill)
+            batch[count++] = comms.buildRelayControl(refill.index, refill.open); // index 2 = refill relay
+        if (full || water != lastWater)
+            batch[count++] = comms.buildRelayControl(water.index, water.open); // index 3 = hot-water valve
+        lastBoiler2 = boiler2;
+        lastRefill = refill;
+        lastWater = water;
     }
 
     if (!handled) {
@@ -962,15 +1122,6 @@ void Controller::updateControl() {
         pump.power = active ? proc->getPumpValue() : 0;
     }
 
-    // Only send components that changed since the last update. The controller is
-    // stateful and every message is acknowledged, so re-sending unchanged values
-    // each cycle is unnecessary; a periodic ping (see loop()) keeps the watchdog
-    // fed when nothing changes. controlStateSent is cleared to force a full resend.
-    gm::Payload batch[4];
-    size_t count = 0;
-    const bool full = !controlStateSent.exchange(true); // claim the flag first so a concurrent reset is never lost
-    if (full || boiler != lastBoiler)
-        batch[count++] = comms.buildBoilerControl(boiler.index, boiler.mode, boiler.setpoint);
     if (full || pump != lastPump)
         batch[count++] = comms.buildPumpControl(pump.index, pump.mode, pump.power, pump.pressure, pump.flow);
     if (full || relay != lastRelay)
@@ -1002,12 +1153,11 @@ void Controller::activate(bool ignoreWarnings) {
     comms.tare();
     currentWaterPumped = 0.0f;
     if (isVolumetricAvailable()) {
-#ifdef NIGHTLY_BUILD
-        currentVolumetricSource =
-            isBluetoothScaleHealthy() ? VolumetricMeasurementSource::BLUETOOTH : VolumetricMeasurementSource::FLOW_ESTIMATION;
-#else
-        currentVolumetricSource = VolumetricMeasurementSource::BLUETOOTH;
-#endif
+        const auto source = getActiveScaleSource();
+        {
+            std::lock_guard<std::recursive_mutex> guard(processMutex);
+            currentVolumetricSource = source;
+        }
         if (mode == MODE_BREW) {
             pluginManager->trigger("controller:brew:prestart");
             delay(200);
@@ -1056,7 +1206,14 @@ void Controller::deactivate() {
 // Runs for every ended process, stopped by hand or finished on its own: stop command, tare, then relax once they are ACKed.
 void Controller::afterDeactivate() {
     updateControl();
-    comms.tare();
+    bool shot;
+    {
+        std::lock_guard<std::recursive_mutex> guard(processMutex);
+        shot = lastProcess != nullptr && lastProcess->getType() == MODE_BREW &&
+               !static_cast<BrewProcess *>(lastProcess)->isUtility();
+    }
+    if (!shot)
+        comms.tare(); // shots tare on history:shot:recorded, once their final weight is written
     relaxPending = true;
     relaxRequestedAt = millis();
 }
@@ -1100,6 +1257,15 @@ void Controller::clearLocked(std::vector<const char *> &events) {
     delete lastProcess;
     lastProcess = nullptr;
     currentVolumetricSource = VolumetricMeasurementSource::INACTIVE;
+#ifdef NIGHTLY_BUILD
+    latestFlowEstimation = 0.0;
+    estimatorAtLastPhysicalMeasurement = 0.0;
+    lastPhysicalMeasurement = 0.0;
+    flowEstimationOffset = 0.0;
+    flowEstimationValid = false;
+    physicalMeasurementValid = false;
+    physicalEstimatorBaselineValid = false;
+#endif
 }
 
 void Controller::activateGrind() {
@@ -1107,8 +1273,12 @@ void Controller::activateGrind() {
     if (isGrindActive())
         return;
     clear();
-    if (settings.isVolumetricTarget() && isVolumetricAvailable()) {
-        currentVolumetricSource = VolumetricMeasurementSource::BLUETOOTH;
+    const auto grindScaleSource = getGrindScaleSource();
+    if (settings.isVolumetricTarget() && grindScaleSource != VolumetricMeasurementSource::INACTIVE) {
+        {
+            std::lock_guard<std::recursive_mutex> guard(processMutex);
+            currentVolumetricSource = grindScaleSource;
+        }
         startProcess(new GrindProcess(ProcessTarget::VOLUMETRIC, 0, settings.getTargetGrindVolume(), settings.getGrindDelay()));
     } else {
         startProcess(
@@ -1149,6 +1319,10 @@ bool Controller::isBrewActive() const {
 int Controller::getMode() const { return mode; }
 
 void Controller::setMode(int newMode) {
+    if (newMode == MODE_STANDBY) {
+        waterValveActive = false;
+        waterButtonPressed = false;
+    }
     Event modeEvent = pluginManager->trigger("controller:mode:change", "value", newMode);
     const int previousMode = mode;
     mode = modeEvent.getInt("value");
@@ -1158,7 +1332,7 @@ void Controller::setMode(int newMode) {
 
     updateLastAction();
     setTargetTemp(getTargetTemp());
-    setPidSettings();
+    setHeaterSettings();
 }
 
 void Controller::onTempRead(float temperature) {
@@ -1195,41 +1369,190 @@ void Controller::onProfileSaveAsNew() {
 }
 
 void Controller::onVolumetricMeasurement(double measurement, VolumetricMeasurementSource source) {
+#ifndef NIGHTLY_BUILD
     if (source == VolumetricMeasurementSource::FLOW_ESTIMATION) {
-        currentCoffeeVolume = static_cast<float>(measurement);
+        return;
     }
-    pluginManager->trigger(source == VolumetricMeasurementSource::FLOW_ESTIMATION
-                               ? F("controller:volumetric-measurement:estimation:change")
-                               : F("controller:volumetric-measurement:bluetooth:change"),
-                           "value", static_cast<float>(measurement));
+#endif
+
     if (source == VolumetricMeasurementSource::BLUETOOTH) {
-        lastBluetoothMeasurement = millis();
+        lastBluetoothMeasurement.store(millis());
+    } else if (source == VolumetricMeasurementSource::HARDWARE) {
+        lastHardwareMeasurement.store(millis());
     }
 
+    double effectiveMeasurement = measurement;
+#ifdef NIGHTLY_BUILD
+    bool switchedToFlowEstimation = false;
+    {
+        std::lock_guard<std::recursive_mutex> guard(processMutex);
+        const bool physicalSourceSelected = currentVolumetricSource == VolumetricMeasurementSource::HARDWARE ||
+                                            currentVolumetricSource == VolumetricMeasurementSource::BLUETOOTH;
+        const bool activeBrew = currentProcess != nullptr && currentProcess->getType() == MODE_BREW && currentProcess->isActive();
+
+        if (source == VolumetricMeasurementSource::FLOW_ESTIMATION) {
+            latestFlowEstimation = measurement;
+            flowEstimationValid = true;
+
+            if (activeBrew && physicalSourceSelected && !isScaleSourceHealthy(currentVolumetricSource)) {
+                // Continue from the last physical weight, including the virtual
+                // weight accumulated during the physical source's timeout.
+                flowEstimationOffset =
+                    physicalMeasurementValid
+                        ? lastPhysicalMeasurement -
+                              (physicalEstimatorBaselineValid ? estimatorAtLastPhysicalMeasurement : measurement)
+                        : 0.0;
+                currentVolumetricSource = VolumetricMeasurementSource::FLOW_ESTIMATION;
+                switchedToFlowEstimation = true;
+            }
+
+            if (currentVolumetricSource == VolumetricMeasurementSource::FLOW_ESTIMATION) {
+                effectiveMeasurement = measurement + flowEstimationOffset;
+            }
+        } else if (physicalSourceSelected && source == currentVolumetricSource) {
+            lastPhysicalMeasurement = measurement;
+            physicalMeasurementValid = true;
+            if (flowEstimationValid) {
+                estimatorAtLastPhysicalMeasurement = latestFlowEstimation;
+                physicalEstimatorBaselineValid = true;
+            }
+        }
+    }
+
+    if (switchedToFlowEstimation) {
+        ESP_LOGW(LOG_TAG, "Selected physical scale stopped reporting; continuing shot with flow estimation (offset %.3f g)",
+                 flowEstimationOffset);
+    }
+#endif
+
+    if (source == VolumetricMeasurementSource::FLOW_ESTIMATION) {
+        pluginManager->trigger(F("controller:volumetric-measurement:estimation:change"), "value",
+                               static_cast<float>(measurement));
+    } else if (source == VolumetricMeasurementSource::HARDWARE) {
+        pluginManager->trigger(F("controller:volumetric-measurement:hardware:change"), "value", static_cast<float>(measurement));
+    } else {
+        pluginManager->trigger(F("controller:volumetric-measurement:bluetooth:change"), "value", static_cast<float>(measurement));
+    }
+
+    // Keep the unified stream on the source selected when the process started.
+    // Live health-based selection is only used while no process source is
+    // locked. This keeps shot history, the UI, and process volume in agreement
+    // if another scale remains healthy after the selected scale stops reporting.
+    if (source == getEffectiveScaleSource()) {
+        pluginManager->trigger(F("controller:volumetric-measurement:active:change"), "value",
+                               normalizeWeightForDisplay(effectiveMeasurement));
+    }
+
+    // This callback fires from the NimBLE task on core 0; deactivate()/clear() on
+    // other tasks can delete the processes, so hold the lock across the deref (GM-147).
+    std::lock_guard<std::recursive_mutex> guard(processMutex);
     if (currentVolumetricSource != source) {
         ESP_LOGD(LOG_TAG, "Ignoring volumetric measurement, source does not match");
         return;
     }
-    // This callback fires from the NimBLE task on core 0; deactivate()/clear() on
-    // other tasks can delete the processes, so hold the lock across the deref (GM-147).
-    std::lock_guard<std::recursive_mutex> guard(processMutex);
     if (currentProcess != nullptr) {
-        currentProcess->updateVolume(measurement);
+        currentProcess->updateVolume(effectiveMeasurement);
     }
     if (lastProcess != nullptr && !lastProcess->isComplete()) {
-        lastProcess->updateVolume(measurement);
+        lastProcess->updateVolume(effectiveMeasurement);
     }
 }
 
+VolumetricMeasurementSource Controller::getPreferredScaleSource() const {
+    const String preferred = settings.getPreferredScaleSource();
+    if (preferred == "hardware") {
+        return VolumetricMeasurementSource::HARDWARE;
+    }
+    if (preferred == "bluetooth") {
+        return VolumetricMeasurementSource::BLUETOOTH;
+    }
+    return VolumetricMeasurementSource::FLOW_ESTIMATION;
+}
+
+VolumetricMeasurementSource Controller::getActiveScaleSource() const {
+    // Always use BT scale for grinding
+    if (mode == MODE_GRIND) {
+        return getGrindScaleSource();
+    }
+
+    const auto preferred = getPreferredScaleSource();
+
+    if (preferred == VolumetricMeasurementSource::HARDWARE && isHardwareScaleHealthy()) {
+        return VolumetricMeasurementSource::HARDWARE;
+    }
+    if (preferred == VolumetricMeasurementSource::BLUETOOTH && isBluetoothScaleHealthy()) {
+        return VolumetricMeasurementSource::BLUETOOTH;
+    }
+    // Auto prefers a paired BLE scale: the user connected it on purpose (GM-249).
+    if (isBluetoothScaleHealthy()) {
+        return VolumetricMeasurementSource::BLUETOOTH;
+    }
+    if (isHardwareScaleHealthy()) {
+        return VolumetricMeasurementSource::HARDWARE;
+    }
+
+#ifdef NIGHTLY_BUILD
+    return VolumetricMeasurementSource::FLOW_ESTIMATION;
+#else
+    return VolumetricMeasurementSource::INACTIVE;
+#endif
+}
+
+VolumetricMeasurementSource Controller::getEffectiveScaleSource() const {
+    VolumetricMeasurementSource processSource;
+    {
+        std::lock_guard<std::recursive_mutex> guard(processMutex);
+        processSource = currentVolumetricSource;
+    }
+    return processSource != VolumetricMeasurementSource::INACTIVE ? processSource : getActiveScaleSource();
+}
+
+VolumetricMeasurementSource Controller::getGrindScaleSource() const {
+    return isBluetoothScaleHealthy() ? VolumetricMeasurementSource::BLUETOOTH : VolumetricMeasurementSource::INACTIVE;
+}
+
+bool Controller::isScaleSourceHealthy(VolumetricMeasurementSource source) const {
+    if (source == VolumetricMeasurementSource::HARDWARE) {
+        return isHardwareScaleHealthy();
+    }
+    if (source == VolumetricMeasurementSource::BLUETOOTH) {
+        return isBluetoothScaleHealthy();
+    }
+    return false;
+}
+
+String Controller::getActiveScaleSourceName() const {
+    const auto source = getEffectiveScaleSource();
+    if (source == VolumetricMeasurementSource::HARDWARE) {
+        return "hardware";
+    }
+    if (source == VolumetricMeasurementSource::BLUETOOTH) {
+        return "bluetooth";
+    }
+    if (source == VolumetricMeasurementSource::FLOW_ESTIMATION) {
+        return "estimation";
+    }
+    return "inactive";
+}
+
 bool Controller::isBluetoothScaleHealthy() const {
-    unsigned long timeSinceLastBluetooth = millis() - lastBluetoothMeasurement;
-    return (timeSinceLastBluetooth < BLUETOOTH_GRACE_PERIOD_MS) || volumetricOverride;
+    const unsigned long lastMeasurement = lastBluetoothMeasurement.load();
+    return lastMeasurement != 0 && millis() - lastMeasurement < BLUETOOTH_GRACE_PERIOD_MS;
+}
+
+bool Controller::isHardwareScaleHealthy() const {
+    if (!systemInfo.capabilities.hwScale) {
+        return false;
+    }
+    const unsigned long lastMeasurement = lastHardwareMeasurement.load();
+    return lastMeasurement != 0 && millis() - lastMeasurement < HARDWARE_GRACE_PERIOD_MS;
 }
 
 void Controller::onFlush() {
     // Allocate outside the lock; reachable from the UI, AsyncTCP and BLE tasks (GM-147).
     const int duration = settings.getFlushDuration();
     Profile profile = FLUSH_PROFILE;
+    profile.temperature = profileManager->getSelectedProfile().temperature;
     profile.phases[0].duration = duration > 0 ? duration : FLUSH_HOLD_MAX_DURATION_S; // 0 = hold, capped
     auto *flush = new BrewProcess(profile, ProcessTarget::TIME, settings.getBrewDelay());
     flush->holdPhase = duration == 0; // pump phase ends on onFlushRelease(), the drain phase still runs
@@ -1377,6 +1700,30 @@ void Controller::handleSteamButton(bool pressed) {
 }
 
 void Controller::handleWaterButton(bool pressed) {
+    if (systemInfo.capabilities.dualBoiler) {
+        if (getMode() == MODE_STANDBY) {
+            waterButtonPressed = false;
+            return;
+        }
+
+        if (pressed) {
+            waterButtonPressed = true;
+            return;
+        }
+
+        if (!waterButtonPressed) {
+            return;
+        }
+        waterButtonPressed = false;
+        waterValveActive = !waterValveActive;
+        if (waterValveActive) {
+            pluginManager->trigger("controller:waterValve:activate");
+        } else {
+            pluginManager->trigger("controller:waterValve:deactivate");
+        }
+        return;
+    }
+
     if (pressed) {
         if (getMode() != MODE_WATER) {
             setMode(MODE_WATER);

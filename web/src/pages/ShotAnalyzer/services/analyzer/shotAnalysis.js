@@ -1,5 +1,6 @@
 /** Orchestrates full-shot aggregation while delegating phase-level decisions. */
 
+import { t } from '@lingui/core/macro';
 import {
   analyzerDebug,
   createDelayTotals,
@@ -18,7 +19,7 @@ import {
   buildRecordedExitReasonByPhase,
   getBrewCompletionLabel,
   getBrewModeLabel,
-  getPhaseExitReasonMeta,
+  getPhaseExitReasonLabel,
   isSafetyExitReason,
   normalizePhaseExitReasonCode,
 } from './exitReasons.js';
@@ -62,7 +63,7 @@ function applySkippedPhaseSystemStats(analyzedPhases, brewModeLabel, configuredS
   analyzedPhases.forEach(phase => {
     if (!phase.skipped) return;
     phase.stats.sys_brew_mode = brewModeLabel;
-    phase.stats.sys_recorded_stop_reason = 'Not recorded';
+    phase.stats.sys_recorded_stop_reason = t`Not recorded`;
     phase.stats.sys_scale_delay = configuredScaleDelayMs;
   });
 }
@@ -107,6 +108,24 @@ function getDelayReviewSummary(analyzedPhases) {
   };
 }
 
+/** Converts ratio targets to grams using the shot's dose (notes, then profile); without a dose the firmware skips them too. */
+function resolveRatioTargets(profileData, shotData) {
+  if (!profileData?.phases?.some(phase => phase.targets?.some(t => t.type === 'ratio')))
+    return profileData;
+
+  const dose = Number.parseFloat(shotData.notes?.doseIn) || Number(profileData.dose) || 0;
+  return {
+    ...profileData,
+    phases: profileData.phases.map(phase => ({
+      ...phase,
+      targets: (phase.targets || []).flatMap(target => {
+        if (target.type !== 'ratio') return [target];
+        return dose > 0 ? [{ ...target, value: target.value * dose, ratio: target.value }] : [];
+      }),
+    })),
+  };
+}
+
 /**
  * Main Analysis Function
  * Calculates all metrics for a shot with optional profile comparison
@@ -118,11 +137,12 @@ function getDelayReviewSummary(analyzedPhases) {
  * @param {boolean} settings.isAutoAdjusted - Whether delay was auto-detected
  * @returns {Object} Analysis results with phases and totals
  */
-export function calculateShotMetrics(shotData, profileData, settings) {
+export function calculateShotMetrics(shotData, rawProfileData, settings) {
   // Defensive guard: ensure valid shot data with samples
   if (!shotData || !Array.isArray(shotData.samples) || shotData.samples.length === 0) {
-    return { phases: [], warnings: ['No sample data available for analysis.'] };
+    return { phases: [], warnings: [t`No sample data available for analysis.`] };
   }
+  const profileData = resolveRatioTargets(rawProfileData, shotData);
 
   const { scaleDelayMs, sensorDelayMs, isAutoAdjusted } = settings;
   const debugEnabled = isAnalyzerDebugEnabled();
@@ -144,7 +164,7 @@ export function calculateShotMetrics(shotData, profileData, settings) {
   const brewModeLabel = getBrewModeLabel(isBrewByWeight);
   const configuredScaleDelayMs = Math.max(0, Number(shotData.brewDelay) || 0);
   const finalExitReasonCode = normalizePhaseExitReasonCode(shotData.finalExitReason);
-  const finalExitReasonLabel = getPhaseExitReasonMeta(finalExitReasonCode).label;
+  const finalExitReasonLabel = getPhaseExitReasonLabel(finalExitReasonCode);
 
   const globalScaleLost = isBrewByWeight && getBluetoothScaleConnectionState(gSamples).scaleLost;
   const { hasSlowSampleInterval, maxSampleIntervalMs } = getSlowSampleIntervalSummary(gSamples);
@@ -233,7 +253,7 @@ export function calculateShotMetrics(shotData, profileData, settings) {
     sys_raw: finalSysInfo.raw,
     sys_shot_vol: finalSysInfo.shotStartedVolumetric,
     sys_curr_vol: finalSysInfo.currentlyVolumetric,
-    sys_scale: finalSysInfo.bluetoothScaleConnected,
+    sys_scale: finalSysInfo.activeScaleConnected,
     sys_vol_avail: finalSysInfo.volumetricAvailable,
     sys_ext: finalSysInfo.extendedRecording,
     sys_brew_mode: brewModeLabel,

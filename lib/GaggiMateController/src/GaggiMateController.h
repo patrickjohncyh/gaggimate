@@ -5,7 +5,9 @@
 #include <peripherals/DigitalInput.h>
 #include <peripherals/DistanceSensor.h>
 #include <peripherals/FlowSensor.h>
+#include <peripherals/HardwareScale.h>
 #include <peripherals/Heater.h>
+#include <peripherals/HeaterCoordinator.h>
 #include <peripherals/LedController.h>
 #include <peripherals/Max31855Thermocouple.h>
 #include <peripherals/PressureSensor.h>
@@ -16,13 +18,14 @@
 
 constexpr double PING_TIMEOUT_SECONDS = 20.0;
 constexpr unsigned long LED_HEALTH_CHECK_INTERVAL_MS = 5000;
+constexpr unsigned long TANK_LEVEL_SEND_INTERVAL_MS = 5000;
 
 constexpr int DETECT_EN_PIN = 40;
 constexpr int DETECT_VALUE_PIN = 11;
 
 class GaggiMateController {
   public:
-    GaggiMateController(String version);
+    explicit GaggiMateController(String version);
     void setup(void);
     void loop(void);
 
@@ -37,24 +40,35 @@ class GaggiMateController {
     void startPidAutotune(void);
     void stopPidAutotune(void);
     void sendSensorData(void);
+    void sendTankLevel();
     void handleSerialCommand(char c);
     bool isSteamSwitchOn() const;
 
     ControllerConfig _config = ControllerConfig{};
     GaggiMateServer _comms;
 
-    Max31855Thermocouple *thermocouple = nullptr;
+    TemperatureSensor *brewTemperature = nullptr;
+    TemperatureSensor *steamTemperature = nullptr;
     Heater *heater = nullptr;
+    Heater *heater2 = nullptr;
+    HeaterCoordinator *heaterCoordinator = nullptr;
+    Pump *pump = nullptr;
     SimpleRelay *valve = nullptr;
     SimpleRelay *alt = nullptr;
-    Pump *pump = nullptr;
+    SimpleRelay *refill = nullptr;
+    SimpleRelay *aux = nullptr;
+    SimpleRelay *lights = nullptr;
     DigitalInput *brewBtn = nullptr;
     DigitalInput *steamBtn = nullptr;
+    DigitalInput *waterBtn = nullptr;
+    DigitalInput *waterSense = nullptr;
+    DigitalInput *tankLevel = nullptr;
     PressureSensor *pressureSensor = nullptr;
     LedController *ledController = nullptr;
     DistanceSensor *distanceSensor = nullptr;
     ADSAdc *adc = nullptr;
     FlowSensor *flowSensor = nullptr;
+    HardwareScale *hardwareScale = nullptr;
 
     GearpumpAddon *gearpumpAddon = nullptr;
 
@@ -66,6 +80,7 @@ class GaggiMateController {
     String _version;
     unsigned long lastPingTime = 0;
     unsigned long lastLedHealthCheck = 0;
+    unsigned long lastTankLevelSend = 0;
     size_t errorState = ERROR_CODE_NONE;
 
     const char *LOG_TAG = "GaggiMateController";

@@ -21,7 +21,7 @@
 const IPAddress WIFI_AP_IP(4, 4, 4, 1); // the IP address the web server, Samsung requires the IP to be in public space
 const IPAddress WIFI_SUBNET_MASK(255, 255, 255, 0); // no need to change: https://avinetworks.com/glossary/subnet-mask/
 
-enum class VolumetricMeasurementSource { INACTIVE, FLOW_ESTIMATION, BLUETOOTH };
+enum class VolumetricMeasurementSource { INACTIVE, FLOW_ESTIMATION, BLUETOOTH, HARDWARE };
 
 // What the display's standby label reports; shared with the web UI so headless users see the same thing.
 enum SystemState {
@@ -48,16 +48,19 @@ class Controller {
     void setMode(int newMode);
     void setTargetTemp(float temperature);
     void setPressureScale();
+    void setScaleFactors();
     void setPumpModelCoeffs();
-    void setPidSettings();
+    void setHeaterSettings();
     void setTargetGrindDuration(int duration);
     void setTargetGrindVolume(double volume);
 
     int getMode() const;
 
     float getTargetTemp() const;
+    float getTargetSteamTemp() const;
     int getTargetGrindDuration() const;
     virtual float getCurrentTemp() const { return currentTemp; }
+    virtual float getCurrentSteamTemp() const { return currentSteamTemp; }
     bool isActive() const;
     bool isGrindActive() const;
     bool isBrewActive() const;
@@ -90,6 +93,7 @@ class Controller {
     ProfileManager *getProfileManager() { return profileManager; }
 #ifndef GAGGIMATE_HEADLESS
     DefaultUI *getUI() const { return ui; }
+    bool areGaugeSetpointsInside() const { return gaugeSetpointsInside; }
 #endif
     bool isErrorState() const { return error > 0; }
     int getError() const { return error; }
@@ -100,6 +104,8 @@ class Controller {
     void updateLastAction();
     void raiseTemp();
     void lowerTemp();
+    void raiseSteamTemp();
+    void lowerSteamTemp();
     void raiseBrewTarget();
     void lowerBrewTarget();
     void raiseGrindTarget();
@@ -119,8 +125,18 @@ class Controller {
     void onProfileSave() const;
     void onProfileSaveAsNew();
     void onVolumetricMeasurement(double measurement, VolumetricMeasurementSource source);
-    void setVolumetricOverride(bool override) { volumetricOverride = override; }
+    VolumetricMeasurementSource getActiveScaleSource() const;
+    VolumetricMeasurementSource getEffectiveScaleSource() const;
+    VolumetricMeasurementSource getGrindScaleSource() const;
+    VolumetricMeasurementSource getPreferredScaleSource() const;
+    bool isScaleSourceHealthy(VolumetricMeasurementSource source) const;
+    String getActiveScaleSourceName() const;
     bool isBluetoothScaleHealthy() const;
+    bool isHardwareScaleHealthy() const;
+    float getHardwareScaleCell1Weight() const { return hardwareScaleCell1Weight.load(); }
+    float getHardwareScaleCell2Weight() const { return hardwareScaleCell2Weight.load(); }
+    bool isHardwareScaleCell1Valid() const { return hardwareScaleCell1Valid.load(); }
+    bool isHardwareScaleCell2Valid() const { return hardwareScaleCell2Valid.load(); }
     void onFlush();
     void onFlushRelease(); // ends a hold-to-flush; no-op otherwise
     int getWaterLevel() const {
@@ -146,10 +162,11 @@ class Controller {
     // Initialization methods
 #ifndef GAGGIMATE_HEADLESS
     void setupPanel();
+    void seedSDCard();
 #endif
     void setupBluetooth();
     void onSystemInfo(const char *hardware, const char *version, uint32_t protocolVersion, bool dimming, bool pressure,
-                      bool ledControl, bool tof, std::vector<uint32_t> addons);
+                      bool ledControl, bool tof, bool dualBoiler, std::vector<uint32_t> addons);
     // Connected to a controller too old to speak the framed protocol: drive the
     // same path as a protocol-version mismatch (OTA recovery only). infoJson is
     // the legacy INFO characteristic contents (hardware/version/capabilities).
@@ -196,6 +213,7 @@ class Controller {
 #ifndef GAGGIMATE_HEADLESS
     DefaultUI *ui = nullptr;
     Driver *driver = nullptr;
+    bool gaugeSetpointsInside = false;
 #endif
     GaggiMateClient comms;
     ButtonHandler buttons;
@@ -206,7 +224,8 @@ class Controller {
     WarningManager warnings;
 
     int mode = MODE_BREW;
-    float currentTemp = 0;
+    float currentTemp = 0.0f;
+    float currentSteamTemp = 0.0f;
     float pressure = 0.0f;
     float targetPressure = 0.0f;
     float currentPuckFlow = 0.0f;
@@ -225,8 +244,11 @@ class Controller {
     // transmits components that differ from these (the controller is stateful
     // and delivery is acknowledged). Cleared on (re)connect, a dropped frame and link settle.
     BoilerCommand lastBoiler{};
+    BoilerCommand lastBoiler2{};
     PumpCommand lastPump{};
     RelayCommand lastRelay{};
+    RelayCommand lastRefill{};
+    RelayCommand lastWater{};
     bool lastAlt = false;
     std::atomic<bool> controlStateSent{false};
     std::atomic<bool> stateResendPending{false}; // set from comms threads, serviced in loop()
@@ -266,18 +288,38 @@ class Controller {
     unsigned long lastConfigResend = 0;
     static const unsigned long CONFIG_RESEND_WINDOW_MS = 8000;
     static const unsigned long CONFIG_RESEND_INTERVAL_MS = 1000;
-    bool volumetricOverride = false;
     bool processCompleted = false;
     bool steamReady = false;
     bool steamSwitchOn = false;
     bool flushPending = false; // no flush since entering brew mode, waking up, or the last shot
+    bool waterValveActive = false;
+    bool waterButtonPressed = false;
     bool sdcard = false;
+    bool steamBoilerLow = false;
     int error = 0;
 
     // Bluetooth scale connection monitoring
     VolumetricMeasurementSource currentVolumetricSource = VolumetricMeasurementSource::INACTIVE;
-    unsigned long lastBluetoothMeasurement = 0;
+    std::atomic<unsigned long> lastBluetoothMeasurement{0};
+    std::atomic<unsigned long> lastHardwareMeasurement{0};
+#ifdef NIGHTLY_BUILD
+    // The virtual scale runs in parallel with a physical scale. If the selected
+    // physical source stops reporting, preserve continuity by applying the
+    // estimator's change since the last good physical measurement.
+    double latestFlowEstimation = 0.0;
+    double estimatorAtLastPhysicalMeasurement = 0.0;
+    double lastPhysicalMeasurement = 0.0;
+    double flowEstimationOffset = 0.0;
+    bool flowEstimationValid = false;
+    bool physicalMeasurementValid = false;
+    bool physicalEstimatorBaselineValid = false;
+#endif
+    std::atomic<float> hardwareScaleCell1Weight{0.0f};
+    std::atomic<float> hardwareScaleCell2Weight{0.0f};
+    std::atomic<bool> hardwareScaleCell1Valid{false};
+    std::atomic<bool> hardwareScaleCell2Valid{false};
     static const unsigned long BLUETOOTH_GRACE_PERIOD_MS = 1500; // 1.5 second grace period
+    static const unsigned long HARDWARE_GRACE_PERIOD_MS = 1500;
     static const unsigned long CONTROLLER_WAITING_TIMEOUT_MS = 10000;
 
     xTaskHandle logicTaskHandle;

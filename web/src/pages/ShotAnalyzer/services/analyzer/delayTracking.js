@@ -1,3 +1,6 @@
+import { t } from '@lingui/core/macro';
+import { isWeightType } from './exitReasons.js';
+
 /* global globalThis */
 
 export const LAST_PHASE_UNDERSHOOT_MIN_G = 2;
@@ -29,9 +32,9 @@ export function analyzerDebug(enabled, message, payload = null) {
 export function getDelayReviewMessage(phaseNumber, delayMs) {
   if (!phaseNumber) return null;
   if (delayMs != null) {
-    return `Unusually high inferred delay in Phase ${phaseNumber} (${delayMs} ms).`;
+    return t`Unusually high inferred delay in Phase ${phaseNumber} (${delayMs} ms).`;
   }
-  return `Unusually high inferred delay in Phase ${phaseNumber}.`;
+  return t`Unusually high inferred delay in Phase ${phaseNumber}.`;
 }
 
 export function createDelayTotals() {
@@ -44,7 +47,7 @@ export function createDelayTotals() {
 }
 
 export function addDelayHit(delayTotals, exitType, delayMs) {
-  if (exitType === 'weight' || exitType === 'volumetric') {
+  if (isWeightType(exitType)) {
     delayTotals.sumScaleDelay += delayMs;
     delayTotals.countScaleHits++;
     return;

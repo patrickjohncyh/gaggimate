@@ -8,7 +8,9 @@ static constexpr const char *NVS_PEER_KEY = "peer";
 void BleClientTransport::init(const String &deviceName) {
     NimBLEDevice::init(deviceName.c_str());
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-    NimBLEDevice::setMTU(256);
+    NimBLEDevice::setMTU(BLE_MTU);
+    if (int rc = ble_gap_write_sugg_def_data_len(BLE_DLE_OCTETS, BLE_DLE_TIME_US); rc != 0)
+        ESP_LOGW(LOG_TAG, "Setting suggested data length failed: %d", rc);
     // Just Works bonding with LE Secure Connections, mirroring the controller.
     NimBLEDevice::setSecurityAuth(true, false, true);
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
@@ -82,6 +84,10 @@ bool BleClientTransport::connectToServer() {
         }
     }
 
+    // ATT MTU does not enlarge link-layer packets. Request DLE on the machine
+    // link so telemetry needs fewer radio fragments when a BLE scale is also connected.
+    _client->setDataLen(BLE_DLE_OCTETS);
+
     NimBLERemoteService *service = _client->getService(NimBLEUUID(gm_proto::SERVICE_UUID));
     if (service == nullptr) {
         ESP_LOGE(LOG_TAG, "Service not found");
@@ -116,6 +122,15 @@ bool BleClientTransport::connectToServer() {
         ESP_LOGE(LOG_TAG, "Failed to subscribe to TX characteristic");
         _client->disconnect();
         scan();
+        return false;
+    }
+
+    // NimBLE 1.4 reports a subscribe as successful when the CCCD lookup failed because the link dropped mid-discovery;
+    // onDisconnect already emitted the drop and restarted the scan, so don't follow it with a stale connect.
+    if (!_client->isConnected()) {
+        ESP_LOGW(LOG_TAG, "Link dropped during setup, waiting for rescan");
+        _writeChar = nullptr;
+        _notifyChar = nullptr;
         return false;
     }
 
@@ -273,9 +288,9 @@ void BleClientTransport::onResult(NimBLEAdvertisedDevice *advertisedDevice) {
         }
     }
     ESP_LOGI(LOG_TAG, "Found controller, ready to connect");
-    _scanner->stop();
     // Value-copy the address now -- the device object is freed when this callback returns (see header note).
     _serverAddress = advertisedDevice->getAddress();
+    _scanner->stop();
     _haveServerAddress = true;
     _readyForConnection = true;
 }

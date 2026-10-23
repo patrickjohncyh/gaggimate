@@ -11,6 +11,8 @@ struct SystemCapabilities {
     bool pressure;
     bool ledControl;
     bool tof;
+    bool dualBoiler;
+    bool hwScale = false;
     std::vector<uint32_t> addons;
 
     bool hasAddon(uint32_t addon) const { return std::find(addons.begin(), addons.end(), addon) != addons.end(); }
