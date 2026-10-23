@@ -70,9 +70,9 @@ All references are to this branch.
    → The cloud idempotency key is **(device id, shot id, startEpoch, durationMs, content
    sha256)**, never the bare id. A same-id/different-hash arrival is a new logical shot, flagged.
 2. **Invalid timestamps** (seen: shots 0–96).
-   → Upload `startEpoch` with an `epoch_valid` flag (≥ 1700000000) plus the device's boot id
-   and uptime at shot end. CloudSync waits for a valid clock before uploading *new* shots, but
-   backfill must still send relative-time shots, marked as such.
+   → *Decided:* every uploaded shot must carry a verified UTC epoch (see §7). Restart SNTP on
+   every STA connect. A shot that starts before sync keeps its `millis()` start and is converted
+   once the clock syncs. Shots that can't be converted are not uploaded.
 3. **The profile isn't in the shot.** The `.slog` has only id and name, and the profile can
    change before upload.
    → Snapshot the profile at `controller:brew:end` (under `getProcessLock()`) and send it, or
@@ -115,15 +115,23 @@ All references are to this branch.
 - A dedicated worker task. It waits for STA Wi-Fi, a valid clock, idle, and not updating. Then
   it uploads the raw `.slog` + notes + profile snapshot as one POST to `/v1/device/shots`, and
   advances a persisted cursor (`/h/.cloudsync`) only on a 2xx ack. Backoff with jitter.
-- On boot or reconnect, reconcile `index.bin` against the cursor (backfill).
+- On boot or reconnect, reconcile `index.bin` against the cursor, but only for shots recorded
+  since CloudSync was enabled. Legacy shots are never uploaded (see §7).
 - Command polling and profile install come later (plan Phase 6). Install-only first, idle-only,
   read-back hash, never overwrite the original.
 
-## 7. Open decisions
+## 7. Decisions (2026-10-23)
 
-- Where the cloud repo lives (new `coffee-coach` repo?) and whether you have Cloudflare (Workers,
-  D1, R2) and a Telegram bot token ready.
-- Whether to commit the captured fixtures. This fork is **public**, and the shot fixtures reveal
-  brewing times. They fit the cloud repo's `tests/fixtures/` better (keep that repo private).
-- Device auth: an opaque per-device bearer token (simplest) vs HMAC-signed requests with a
-  timestamp (replay protection without TLS pinning).
+- **Clean slate.** Legacy shots (ids 0–170 on the machine) are ignored. Gaggi starts with the
+  first shot CloudSync uploads. No backfill. The cursor is initialised to the current
+  `historyIndex` when CloudSync is first enabled.
+- **UTC timestamps.** `startEpoch` is Unix time, so it's UTC; display time zones are derived in
+  the cloud. Firmware requirements:
+  - re-init SNTP on every STA connect (today it only starts at boot and never in AP fallback);
+  - treat an epoch as valid only when SNTP reports synced and the epoch is ≥ 1700000000;
+  - convert pre-sync shots from their `millis()` start once synced;
+  - never upload a shot without a valid UTC start.
+- **Cloud repo:** private `patrickjohncyh/gaggi` (Gaggi is the coach's name). Fixtures live in
+  its `tests/fixtures/firmware/`, not in this public fork.
+- **Still open:** device authentication (proposed: per-device bearer token over HTTPS) and the
+  Telegram bot (not created yet; needed from Phase 3).
