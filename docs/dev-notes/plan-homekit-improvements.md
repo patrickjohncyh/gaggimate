@@ -10,8 +10,10 @@ Branch: `feat/homekit-improvements` (from `master` @ `6dff0448`, the current nig
    contributes to the hang.
 2. Machine modes: **Brew**, **Steam**, and **Hot Water** switches, mutually exclusive.
 3. Accessory information: Name, Manufacturer, Model, SerialNumber, FirmwareRevision.
+4. **Espresso Ready** sensor that accounts for group/portafilter heat-soak, not just the boiler.
 
-Deferred: status sensors (Brewing/Ready/Low Water), per-device setup code and QR in the web UI.
+Deferred: Brewing and Low Water sensors, a backflush reminder (built, then dropped), and a
+per-device setup code with a QR code in the web UI.
 
 ## Root cause of the Siri bug (verified against the HomeSpan 1.9.1 source)
 
@@ -135,7 +137,11 @@ Deferred: status sensors (Brewing/Ready/Low Water), per-device setup code and QR
 
 ## CI
 
-- `check.yml` runs `pio check` on the display with `--fail-on-defect=medium` (non-blocking) and
-  on the controller (blocking), plus the native tests.
-- Before pushing, run `pio test -e native`, `pio run -e display`, and `pio check -e display`
-  locally.
+- `check.yml` runs on every push and PR, but only as static analysis:
+  - `pio check` on the display with `--fail-on-defect=medium`, non-blocking.
+  - `pio check` on the controller, blocking.
+- It does **not** run the native tests or build the firmware, so do both locally before
+  pushing: `pio test -e native`, then `scripts/build_webui.sh` followed by `pio run -e display`.
+- The display analysis has 0 high/medium findings. The new low-severity `unusedFunction`
+  notes on `HomekitMapping.cpp` are false positives (cppcheck doesn't see the calls from
+  `HomekitPlugin.cpp`), the same as the existing ones on `Settings.cpp`.
