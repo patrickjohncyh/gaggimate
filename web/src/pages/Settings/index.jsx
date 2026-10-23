@@ -2,17 +2,17 @@ import { faFileExport } from '@fortawesome/free-solid-svg-icons/faFileExport';
 import { faFileImport } from '@fortawesome/free-solid-svg-icons/faFileImport';
 import { faEllipsisVertical } from '@fortawesome/free-solid-svg-icons/faEllipsisVertical';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { useCallback, useEffect, useRef, useState, useContext } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { useRoute } from 'preact-iso';
+import { Plural, Trans, useLingui } from '@lingui/react/macro';
+import { t } from '@lingui/core/macro';
 import {
-  ApiServiceContext,
-  machine,
   prefetchSettings,
   updateSettingsCache,
   getCachedSettings,
 } from '../../services/ApiService.js';
 import {
-  DASHBOARD_LAYOUTS,
+  getDashboardLayout,
   setDashboardLayout,
   setClock24h,
 } from '../../utils/dashboardManager.js';
@@ -21,6 +21,7 @@ import { getStoredTheme, handleThemeChange } from '../../utils/themeManager.js';
 
 import PageLayout from '../../components/PageLayout.jsx';
 import PageHeader from '../../components/PageHeader.jsx';
+import { useProfileList } from '../../services/hooks.js';
 import TabBar from '../../components/TabBar.jsx';
 
 import lazy from 'preact-iso/lazy';
@@ -56,18 +57,24 @@ import { faCrosshairs } from '@fortawesome/free-solid-svg-icons/faCrosshairs';
 import { faPuzzlePiece } from '@fortawesome/free-solid-svg-icons/faPuzzlePiece';
 import { faBluetoothB } from '@fortawesome/free-brands-svg-icons/faBluetoothB';
 import { faRotate } from '@fortawesome/free-solid-svg-icons/faRotate';
+import { isApp } from '../../app/platform.js';
 
 const CHECKBOX_KEYS = [
   'homekit',
   'boilerFillActive',
   'smartGrindActive',
+  'mahlkonigActive',
   'homeAssistant',
   'momentaryButtons',
+  'heaterCoordinationEnabled',
   'delayAdjust',
   'clock24hFormat',
   'autowakeupEnabled',
   'smartGrindToggle',
 ];
+
+// Device facts GET /api/settings reports for display only; never saved, exported or imported.
+const READ_ONLY_KEYS = ['deviceIp'];
 
 // Form-only fields that never come back from GET /api/settings.
 const FORM_ONLY_KEYS = [
@@ -78,6 +85,11 @@ const FORM_ONLY_KEYS = [
   'standbyDisplayEnabled',
   'dashboardLayout',
 ];
+
+const DEFAULT_SCALE_FACTOR_1 = -2500.0;
+const DEFAULT_SCALE_FACTOR_2 = 2500.0;
+const DEFAULT_HARDWARE_SCALE_SAMPLE_RATE_SPS = 10;
+const DEFAULT_HARDWARE_SCALE_FILTER_ALPHA = 0.8;
 
 function splitPidString(pidString) {
   if (!pidString) return { pid: pidString, kf: '0.000' };
@@ -125,8 +137,29 @@ function transformFetchedSettings(fetchedSettings) {
       fetchedSettings.standbyDisplayEnabled !== undefined
         ? fetchedSettings.standbyDisplayEnabled
         : fetchedSettings.standbyBrightness > 0,
-    dashboardLayout: fetchedSettings.dashboardLayout || DASHBOARD_LAYOUTS.ORDER_FIRST,
+    // Stored locally, never returned by the machine.
+    dashboardLayout: getDashboardLayout(),
   };
+
+  const sf1 = Number(fetchedSettings.scaleFactor1);
+  const sf2 = Number(fetchedSettings.scaleFactor2);
+  settingsWithToggle.scaleFactor1 =
+    Number.isFinite(sf1) && Math.abs(sf1) > 0.001 ? sf1 : DEFAULT_SCALE_FACTOR_1;
+  settingsWithToggle.scaleFactor2 =
+    Number.isFinite(sf2) && Math.abs(sf2) > 0.001 ? sf2 : DEFAULT_SCALE_FACTOR_2;
+  const sampleRate = Number(fetchedSettings.hardwareScaleSampleRateSps);
+  settingsWithToggle.hardwareScaleSampleRateSps =
+    sampleRate === 80 ? 80 : DEFAULT_HARDWARE_SCALE_SAMPLE_RATE_SPS;
+  const idleAlpha = Number(fetchedSettings.hardwareScaleIdleAlpha);
+  settingsWithToggle.hardwareScaleIdleAlpha =
+    Number.isFinite(idleAlpha) && idleAlpha > 0 && idleAlpha <= 1
+      ? idleAlpha
+      : DEFAULT_HARDWARE_SCALE_FILTER_ALPHA;
+  const activeAlpha = Number(fetchedSettings.hardwareScaleActiveAlpha);
+  settingsWithToggle.hardwareScaleActiveAlpha =
+    Number.isFinite(activeAlpha) && activeAlpha > 0 && activeAlpha <= 1
+      ? activeAlpha
+      : DEFAULT_HARDWARE_SCALE_FILTER_ALPHA;
 
   if (fetchedSettings.pid) {
     const split = splitPidString(fetchedSettings.pid);
@@ -149,7 +182,7 @@ function isTruthySetting(value) {
 // Maps a full or partial settings file onto form fields; keys the file lacks stay untouched.
 function normalizeImportedSettings(data, knownKeys) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new Error('The file does not contain a settings object.');
+    throw new Error(t`The file does not contain a settings object.`);
   }
   const fields = {};
   const ignored = [];
@@ -182,7 +215,7 @@ function buildSubmitFormData(formData, autowakeupSchedules, restart) {
   const formDataToSubmit = new FormData();
 
   for (const [key, value] of Object.entries(formData)) {
-    if (value === undefined || value === null) continue;
+    if (value === undefined || value === null || READ_ONLY_KEYS.includes(key)) continue;
 
     if (CHECKBOX_KEYS.includes(key)) {
       // Always explicit: the firmware leaves absent booleans untouched (GM-214).
@@ -221,12 +254,12 @@ function buildSubmitFormData(formData, autowakeupSchedules, restart) {
 }
 
 export function Settings() {
-  const apiService = useContext(ApiServiceContext);
+  const { t } = useLingui();
   const { params } = useRoute();
   const tab = params.tab || 'general';
   const isFormTab = ['general', 'machine', 'plugins'].includes(tab);
 
-  const [profiles, setProfiles] = useState([]);
+  const { profiles } = useProfileList();
   const [submitting, setSubmitting] = useState(false);
   const [formData, setFormData] = useState({});
   const [currentTheme, setCurrentTheme] = useState('light');
@@ -254,16 +287,6 @@ export function Settings() {
         });
     }
   }, [fetchedSettings]);
-
-  useEffect(() => {
-    const loadProfiles = async () => {
-      if (machine.value.connected) {
-        const response = await apiService.request({ tp: 'req:profiles:list', minimal: true });
-        setProfiles(response.profiles);
-      }
-    };
-    loadProfiles();
-  }, [machine.value.connected, apiService]);
 
   const formRef = useRef();
   const dropdownRef = useRef(null);
@@ -402,7 +425,9 @@ export function Settings() {
 
   const onExport = useCallback(() => {
     const autowakeupSchedulesStr = serializeAutoWakeupSchedules(autowakeupSchedules);
-    downloadJson({ ...formData, autowakeupSchedules: autowakeupSchedulesStr }, 'settings.json');
+    const exported = { ...formData, autowakeupSchedules: autowakeupSchedulesStr };
+    READ_ONLY_KEYS.forEach(key => delete exported[key]);
+    downloadJson(exported, 'settings.json');
   }, [formData, autowakeupSchedules]);
 
   const onUpload = async evt => {
@@ -412,14 +437,15 @@ export function Settings() {
     try {
       // Merging onto a form that never loaded would save defaults over the real settings.
       if (isLoading || !Object.keys(formData).length) {
-        throw new Error('Settings have not loaded yet.');
+        throw new Error(t`Settings have not loaded yet.`);
       }
       const knownKeys = new Set([...Object.keys(formData), ...FORM_ONLY_KEYS]);
+      READ_ONLY_KEYS.forEach(key => knownKeys.delete(key));
       const { fields, schedules, ignored, count } = normalizeImportedSettings(
         JSON.parse(await file.text()),
         knownKeys,
       );
-      if (!count) throw new Error('The file contains no known settings.');
+      if (!count) throw new Error(t`The file contains no known settings.`);
 
       setFormData(prev => ({ ...prev, ...fields }));
       if (schedules) setAutoWakeupSchedules(schedules);
@@ -443,18 +469,28 @@ export function Settings() {
   }, [fetchedSettings]);
 
   const settingsTabs = [
-    { id: 'general', label: 'General', icon: faSliders },
-    { id: 'machine', label: 'Machine', icon: faTemperatureHalf, preload: loadMachineTab },
-    { id: 'calibration', label: 'Calibration', icon: faCrosshairs, preload: loadCalibrationTab },
-    { id: 'plugins', label: 'Plugins', icon: faPuzzlePiece, preload: loadPluginsTab },
+    { id: 'general', label: t`General`, icon: faSliders },
+    {
+      id: 'machine',
+      label: t({ message: 'Machine', context: 'settings tab' }),
+      icon: faTemperatureHalf,
+      preload: loadMachineTab,
+    },
+    { id: 'calibration', label: t`Calibration`, icon: faCrosshairs, preload: loadCalibrationTab },
+    { id: 'plugins', label: t`Plugins`, icon: faPuzzlePiece, preload: loadPluginsTab },
     { id: 'bluetooth', label: 'Bluetooth', icon: faBluetoothB, preload: loadBluetoothTab },
-    { id: 'system', label: 'System & Updates', icon: faRotate, preload: loadSystemTab },
+    { id: 'system', label: t`System & Updates`, icon: faRotate, preload: loadSystemTab },
   ];
+
+  const importName = importNotice?.name;
+  const importMessage = importNotice?.message;
+  const importCount = importNotice?.count ?? 0;
+  const ignoredEntries = importNotice?.ignored?.join(', ');
 
   return (
     <PageLayout>
       <PageHeader
-        title='Settings'
+        title={isApp ? t`Device Settings` : t`Settings`}
         noStack={true}
         tabs={<TabBar tabs={settingsTabs} activeTab={tab} basePath='/settings' />}
         actions={
@@ -465,7 +501,7 @@ export function Settings() {
             <button
               onClick={() => setDropdownOpen(open => !open)}
               className='btn btn-ghost btn-circle text-base-content/85 hover:bg-base-content/10'
-              aria-label='More options'
+              aria-label={t`More options`}
               aria-expanded={dropdownOpen}
             >
               <FontAwesomeIcon icon={faEllipsisVertical} size='lg' />
@@ -479,10 +515,12 @@ export function Settings() {
                     setDropdownOpen(false);
                   }}
                   className='justify-start gap-2 font-medium'
-                  aria-label='Export settings'
+                  aria-label={t`Export settings`}
                 >
                   <FontAwesomeIcon icon={faFileExport} />
-                  <span>Export Settings</span>
+                  <span>
+                    <Trans>Export Settings</Trans>
+                  </span>
                 </button>
               </li>
               <li>
@@ -493,10 +531,12 @@ export function Settings() {
                     setDropdownOpen(false);
                   }}
                   className='justify-start gap-2 font-medium'
-                  aria-label='Import settings'
+                  aria-label={t`Import settings`}
                 >
                   <FontAwesomeIcon icon={faFileImport} />
-                  <span>Import Settings</span>
+                  <span>
+                    <Trans>Import Settings</Trans>
+                  </span>
                 </button>
               </li>
             </ul>
@@ -519,17 +559,21 @@ export function Settings() {
           <div className='text-sm'>
             {importNotice.error ? (
               <span>
-                Could not import {importNotice.name}: {importNotice.message}
+                <Trans>
+                  Could not import {importName}: {importMessage}
+                </Trans>
               </span>
             ) : (
               <>
                 <span>
-                  Loaded {importNotice.count} {importNotice.count === 1 ? 'setting' : 'settings'}{' '}
-                  from {importNotice.name}. All other settings are kept. Save to apply.
+                  <Trans>
+                    Loaded <Plural value={importCount} one='# setting' other='# settings' /> from{' '}
+                    {importName}. All other settings are kept. Save to apply.
+                  </Trans>
                 </span>
                 {importNotice.ignored.length > 0 && (
                   <span className='block text-xs opacity-80'>
-                    Ignored unknown entries: {importNotice.ignored.join(', ')}
+                    <Trans>Ignored unknown entries: {ignoredEntries}</Trans>
                   </span>
                 )}
               </>
@@ -543,7 +587,7 @@ export function Settings() {
                 disabled={submitting}
                 onClick={() => onSubmit()}
               >
-                Save Settings
+                <Trans>Save Settings</Trans>
               </button>
             )}
             <button
@@ -551,7 +595,7 @@ export function Settings() {
               className='btn btn-sm btn-ghost'
               onClick={importNotice.error ? () => setImportNotice(null) : onDiscardImport}
             >
-              {importNotice.error ? 'Dismiss' : 'Discard'}
+              {importNotice.error ? t`Dismiss` : t`Discard`}
             </button>
           </div>
         </div>

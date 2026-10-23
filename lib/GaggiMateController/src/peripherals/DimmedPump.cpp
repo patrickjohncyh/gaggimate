@@ -3,24 +3,32 @@
 #include <ExtensionIOXL9555.hpp>
 #include <GaggiMateController.h>
 
-DimmedPump::DimmedPump(uint8_t ssr_pin, uint8_t sense_pin, PressureSensor *pressure_sensor)
+DimmedPump::DimmedPump(uint8_t ssr_pin, uint8_t sense_pin, PressureSensor *pressure_sensor, PressureControlRate controlRate)
     : _ssr_pin(ssr_pin), _sense_pin(sense_pin), _psm(_sense_pin, _ssr_pin, 100, FALLING, 1, 4), _pressureSensor(pressure_sensor),
-      _pressureController(0.03f, &_ctrlPressure, &_ctrlFlow, &_currentPressure, &_controllerPower, &_valveStatus) {
+      _controlRate(controlRate), _pressureController(pressureControlPeriodS(controlRate), &_ctrlPressure, &_ctrlFlow,
+                                                     &_currentPressure, &_controllerPower, &_valveStatus) {
     _psm.set(0);
 }
 
 void DimmedPump::setup() {
     _cps = _psm.cps();
+    ESP_LOGI("DimmedPump", "Detected ZC frequency: %dHz", _cps);
     if (_cps > 70) {
         _cps = _cps / 2;
         _psm.setDivider(2);
+        ESP_LOGI("DimmedPump", "Detected 2 signals per wave, dividing down to %dHz", _cps);
     }
     xTaskCreate(loopTask, "DimmedPump::loop", configMINIMAL_STACK_SIZE * 4, this, 1, &taskHandle);
 }
 
 void DimmedPump::loop() {
-    _currentPressure = _pressureSensor->getRawPressure();
-    updatePower();
+    const int64_t now = esp_timer_get_time();
+    const float elapsed = _lastUpdateUs ? (now - _lastUpdateUs) / 1000000.0f : pressureControlPeriodS(_controlRate);
+    _lastUpdateUs = now;
+    const bool fresh = _pressureSensor->consumeAverage();
+    if (fresh)
+        _currentPressure = _pressureSensor->getAveragedPressure();
+    updatePower(fresh, _pressureSensor->getSampleTime(), elapsed);
     _currentFlow = _pressureController.getPumpFlowRate();
 }
 
@@ -55,24 +63,17 @@ void DimmedPump::tare() {
 void DimmedPump::loopTask(void *arg) {
     auto *pump = static_cast<DimmedPump *>(arg);
     TickType_t lastWake = xTaskGetTickCount();
+    uint8_t intervalIndex = 0;
     while (true) {
         pump->loop();
-        xTaskDelayUntil(&lastWake, pdMS_TO_TICKS(30));
+        xTaskDelayUntil(&lastWake, pdMS_TO_TICKS(pressureControlIntervalMs(pump->_controlRate, intervalIndex)));
+        intervalIndex = (intervalIndex + 1) % 3;
     }
 }
 
-void DimmedPump::updatePower() {
-    _pumpedWater += _currentFlow * 0.03f;
-    // This is the more precise logic but some bug is happening with the PSM counter
-    /*
-    if (_binaryMode) {
-        _pumpedWater += _currentFlow * 0.03f;
-    } else {
-        _pumpedWater += _currentFlow / static_cast<float>(_cps) * static_cast<float>(_psm.getCounter());
-        _psm.resetCounter();
-    }
-    */
-    _pressureController.update(static_cast<PressureController::ControlMode>(_mode));
+void DimmedPump::updatePower(bool freshPressure, float sampleTime, float elapsed) {
+    _pumpedWater += _currentFlow * elapsed;
+    _pressureController.update(static_cast<PressureController::ControlMode>(_mode), freshPressure, sampleTime, elapsed);
     if (_mode != ControlMode::POWER) {
         _power = _controllerPower;
     }

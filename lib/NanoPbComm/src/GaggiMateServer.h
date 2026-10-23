@@ -11,16 +11,19 @@
 // pushes SystemInfo to the display on connect.
 class GaggiMateServer {
   public:
+    using ConnectionCallback = std::function<void(bool connected)>;
     using PingCallback = std::function<void()>;
     using BoilerCallback = std::function<void(uint8_t index, BoilerControlMode mode, float setpoint)>;
     using PumpCallback = std::function<void(uint8_t index, PumpControlMode mode, float power, float pressure, float flow)>;
     // Binary output: index 0 = brew valve, index 1 = alt relay.
     using RelayCallback = std::function<void(uint8_t index, bool open)>;
-    using PidCallback = std::function<void(float kp, float ki, float kd, float kf)>;
+    using HeaterSettingsCallback = std::function<void(const gm::HeaterSettings &settings)>;
     using PumpSettingsCallback = std::function<void(gm::PumpSettings settings)>;
     using AutotuneCallback = std::function<void(uint32_t testTime, uint32_t samples, uint32_t heaterWattage)>;
     using PressureScaleCallback = std::function<void(float scale)>;
     using TareCallback = std::function<void()>;
+    using ScaleFactorsCallback = std::function<void(float scaleFactor1, float scaleFactor2, uint16_t sampleRateSps,
+                                                    float idleFilterAlpha, float activeFilterAlpha)>;
     using LedCallback = std::function<void(uint8_t channel, uint8_t brightness)>;
 
     GaggiMateServer();
@@ -39,6 +42,8 @@ class GaggiMateServer {
     gm::Payload buildButtonState(uint8_t index, bool pressed);
     gm::Payload buildAutotuneResult(float kp, float ki, float kd, float kf);
     gm::Payload buildVolumetricMeasurement(float volume);
+    gm::Payload buildScaleMeasurement(float weight, float cell1Weight = 0.0f, float cell2Weight = 0.0f, bool cell1Valid = false,
+                                      bool cell2Valid = false);
     gm::Payload buildTofMeasurement(uint32_t distance);
     gm::Payload buildError(int code);
 
@@ -48,6 +53,8 @@ class GaggiMateServer {
     void sendButtonState(uint8_t index, bool pressed);
     void sendAutotuneResult(float kp, float ki, float kd, float kf);
     void sendVolumetricMeasurement(float volume);
+    void sendScaleMeasurement(float weight, float cell1Weight = 0.0f, float cell2Weight = 0.0f, bool cell1Valid = false,
+                              bool cell2Valid = false);
     void sendTofMeasurement(uint32_t distance);
     void sendError(int code);
 
@@ -65,16 +72,20 @@ class GaggiMateServer {
     void sendUnreliable(const gm::Payload &payload) { _endpoint.sendUnreliable(payload); }
     void sendUnreliableBatch(const gm::Payload *payloads, size_t count) { _endpoint.sendUnreliable(payloads, count); }
 
+    // Link up/down, after the server's own session handling.
+    void onConnectionChange(ConnectionCallback cb) { _connCb = std::move(cb); }
+
     // Command registrations (display -> controller)
     void onPing(PingCallback cb) { _pingCb = std::move(cb); }
     void onBoilerControl(BoilerCallback cb) { _boilerCb = std::move(cb); }
     void onPumpControl(PumpCallback cb) { _pumpCb = std::move(cb); }
     void onRelayControl(RelayCallback cb) { _relayCb = std::move(cb); }
-    void onPidSettings(PidCallback cb) { _pidCb = std::move(cb); }
+    void onHeaterSettings(HeaterSettingsCallback cb) { _heaterSettingsCb = std::move(cb); }
     void onPumpSettings(PumpSettingsCallback cb) { _pumpSettingsCb = std::move(cb); }
     void onAutotune(AutotuneCallback cb) { _autotuneCb = std::move(cb); }
     void onPressureScale(PressureScaleCallback cb) { _pressureScaleCb = std::move(cb); }
     void onTare(TareCallback cb) { _tareCb = std::move(cb); }
+    void onScaleFactors(ScaleFactorsCallback cb) { _scaleFactorsCb = std::move(cb); }
     void onLedControl(LedCallback cb) { _ledCb = std::move(cb); }
 
   private:
@@ -86,15 +97,17 @@ class GaggiMateServer {
     // application-level proof that the new session is ready in both directions.
     bool _sentSystemInfoAfterHandshake = false;
 
+    ConnectionCallback _connCb;
     PingCallback _pingCb;
     BoilerCallback _boilerCb;
     PumpCallback _pumpCb;
     RelayCallback _relayCb;
-    PidCallback _pidCb;
+    HeaterSettingsCallback _heaterSettingsCb;
     PumpSettingsCallback _pumpSettingsCb;
     AutotuneCallback _autotuneCb;
     PressureScaleCallback _pressureScaleCb;
     TareCallback _tareCb;
+    ScaleFactorsCallback _scaleFactorsCb;
     LedCallback _ledCb;
 
     void registerHandlers();

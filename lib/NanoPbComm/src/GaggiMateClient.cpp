@@ -75,13 +75,16 @@ gm::Payload GaggiMateClient::buildRelayControl(uint8_t index, bool open) {
     return p;
 }
 
-gm::Payload GaggiMateClient::buildPidSettings(float kp, float ki, float kd, float kf) {
+gm::Payload GaggiMateClient::buildHeaterSettings(float kp, float ki, float kd, float kf, bool heaterCoordinationEnabled,
+                                                 uint32_t handoverMs) {
     gm::Payload p = gaggimate_Payload_init_zero;
-    p.which_content = gaggimate_Payload_pid_tag;
-    p.content.pid.kp = kp;
-    p.content.pid.ki = ki;
-    p.content.pid.kd = kd;
-    p.content.pid.kf = kf;
+    p.which_content = gaggimate_Payload_heater_tag;
+    p.content.heater.kp = kp;
+    p.content.heater.ki = ki;
+    p.content.heater.kd = kd;
+    p.content.heater.kf = kf;
+    p.content.heater.heater_coordination_enabled = heaterCoordinationEnabled;
+    p.content.heater.handover_ms = handoverMs;
     return p;
 }
 
@@ -155,8 +158,9 @@ void GaggiMateClient::sendPumpControl(uint8_t index, PumpControlMode mode, float
 
 void GaggiMateClient::sendRelayControl(uint8_t index, bool open) { _endpoint.send(buildRelayControl(index, open)); }
 
-void GaggiMateClient::sendPidSettings(float kp, float ki, float kd, float kf) {
-    _endpoint.send(buildPidSettings(kp, ki, kd, kf));
+void GaggiMateClient::sendHeaterSettings(float kp, float ki, float kd, float kf, bool heaterCoordinationEnabled,
+                                         uint32_t handoverMs) {
+    _endpoint.send(buildHeaterSettings(kp, ki, kd, kf, heaterCoordinationEnabled, handoverMs));
 }
 
 void GaggiMateClient::sendPumpSettings(float a, float b, float c, float d, float commutationGain, float convergenceGain,
@@ -172,7 +176,6 @@ void GaggiMateClient::sendAutotune(uint32_t testTime, uint32_t samples, uint32_t
 void GaggiMateClient::sendPressureScale(float scale) { _endpoint.send(buildPressureScale(scale)); }
 
 void GaggiMateClient::tare() { _endpoint.send(buildTare()); }
-
 void GaggiMateClient::sendLedControl(const LedChannelCommand *channels, size_t count) {
     _endpoint.send(buildLedControl(channels, count));
 }
@@ -188,7 +191,8 @@ void GaggiMateClient::registerHandlers() {
             }
             _systemInfoCb(p.content.system_info.hardware, p.content.system_info.version, p.content.system_info.protocol_version,
                           p.content.system_info.capabilities.dimming, p.content.system_info.capabilities.pressure,
-                          p.content.system_info.capabilities.led_control, p.content.system_info.capabilities.tof, addonList);
+                          p.content.system_info.capabilities.led_control, p.content.system_info.capabilities.tof,
+                          p.content.system_info.capabilities.dual_boiler, addonList);
         }
     });
     _endpoint.on(gaggimate_Payload_sensor_tag, [this](const gm::Payload &p) {
@@ -196,6 +200,7 @@ void GaggiMateClient::registerHandlers() {
             return;
         // The display tracks a single boiler today; read boiler 0 if present.
         float temperature = 0.0f;
+        float temp2 = 0.0f;
         float pressure = 0.0f;
         float heater_power = 0.0f;
         if (p.content.sensor.boilers_count > 0) {
@@ -203,8 +208,11 @@ void GaggiMateClient::registerHandlers() {
             pressure = p.content.sensor.boilers[0].pressure;
             heater_power = p.content.sensor.boilers[0].power;
         }
-        _sensorCb(temperature, pressure, p.content.sensor.puck_flow, p.content.sensor.pump_flow, p.content.sensor.puck_resistance,
-                  p.content.sensor.pump_power, heater_power, p.content.sensor.water_pumped);
+        if (p.content.sensor.boilers_count > 1) {
+            temp2 = p.content.sensor.boilers[1].temperature;
+        }
+        _sensorCb(temperature, temp2, pressure, p.content.sensor.puck_flow, p.content.sensor.pump_flow,
+                  p.content.sensor.puck_resistance, p.content.sensor.pump_power, heater_power, p.content.sensor.water_pumped);
     });
     _endpoint.on(gaggimate_Payload_button_tag, [this](const gm::Payload &p) {
         if (_buttonCb)
@@ -218,6 +226,11 @@ void GaggiMateClient::registerHandlers() {
     _endpoint.on(gaggimate_Payload_volumetric_tag, [this](const gm::Payload &p) {
         if (_volumetricCb)
             _volumetricCb(p.content.volumetric.volume);
+    });
+    _endpoint.on(gaggimate_Payload_scale_tag, [this](const gm::Payload &p) {
+        if (_scaleCb)
+            _scaleCb(p.content.scale.weight, p.content.scale.cell1_weight, p.content.scale.cell2_weight,
+                     p.content.scale.cell1_valid, p.content.scale.cell2_valid);
     });
     _endpoint.on(gaggimate_Payload_tof_tag, [this](const gm::Payload &p) {
         if (_tofCb)
