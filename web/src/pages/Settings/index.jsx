@@ -64,6 +64,7 @@ const CHECKBOX_KEYS = [
   'boilerFillActive',
   'smartGrindActive',
   'mahlkonigActive',
+  'cloudSyncActive',
   'homeAssistant',
   'momentaryButtons',
   'heaterCoordinationEnabled',
@@ -74,7 +75,7 @@ const CHECKBOX_KEYS = [
 ];
 
 // Device facts GET /api/settings reports for display only; never saved, exported or imported.
-const READ_ONLY_KEYS = ['deviceIp'];
+const READ_ONLY_KEYS = ['deviceIp', 'cloudSyncTokenConfigured'];
 
 // Form-only fields that never come back from GET /api/settings.
 const FORM_ONLY_KEYS = [

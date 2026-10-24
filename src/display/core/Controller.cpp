@@ -8,6 +8,7 @@
 #include <cmath>
 #include <ctime>
 #include <display/config.h>
+#include <display/core/TimeSync.h>
 #include <display/core/constants.h>
 #include <display/core/process/BrewProcess.h>
 #include <display/core/process/GrindProcess.h>
@@ -18,6 +19,7 @@
 #include <display/plugins/AutoWakeupPlugin.h>
 #include <display/plugins/BoilerFillPlugin.h>
 #include <display/plugins/CleaningSchedulePlugin.h>
+#include <display/plugins/CloudSyncPlugin.h>
 #include <display/plugins/LedControlPlugin.h>
 #include <display/plugins/ShotHistoryPlugin.h>
 #include <display/plugins/SmartGrindPlugin.h>
@@ -108,6 +110,12 @@ void Controller::setup() {
     if (settings.isMahlkonigActive()) {
         pluginManager->registerPlugin(new MahlkonigPlugin());
     }
+#ifndef GAGGIMATE_SIM // HTTPS uploads need esp_http_client/mbedTLS
+    // After WebUIPlugin, which moves mbedTLS allocations to PSRAM.
+    if (settings.isCloudSyncActive()) {
+        pluginManager->registerPlugin(new CloudSyncPlugin());
+    }
+#endif
 #ifndef GAGGIMATE_SIM // WiFi watchdogs and BLE scales are device-only
     pluginManager->registerPlugin(new NetworkWatchdogPlugin());
     pluginManager->registerPlugin(new WifiStaWatchdogPlugin());
@@ -510,6 +518,7 @@ void Controller::setupWifi() {
         if (WiFi.status() == WL_CONNECTED) {
             ESP_LOGI(LOG_TAG, "Connected to %s with IP address %s", settings.getWifiSsid().c_str(),
                      WiFi.localIP().toString().c_str());
+            TimeSync::begin(); // before SNTP starts, so the first sync is seen
             configTzTime(resolve_timezone(settings.getTimezone()), NTP_SERVER);
             setenv("TZ", resolve_timezone(settings.getTimezone()), 1);
             tzset();
@@ -564,6 +573,10 @@ void Controller::loop() {
     }
     if (wifiConnectedPending) {
         wifiConnectedPending = false;
+        if (!isApConnection) {
+            // SNTP otherwise waits out its retry backoff after an outage; shots need a trusted clock.
+            TimeSync::requestSync();
+        }
         pluginManager->trigger("controller:wifi:connect", "AP", isApConnection ? 1 : 0);
     }
 

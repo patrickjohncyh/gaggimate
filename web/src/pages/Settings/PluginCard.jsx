@@ -6,9 +6,68 @@ import { computed } from '@preact/signals';
 import { machine, ApiServiceContext } from '../../services/ApiService.js';
 import { useContext, useEffect, useState } from 'preact/hooks';
 import { Trans, useLingui } from '@lingui/react/macro';
+import { msg } from '@lingui/core/macro';
 import { useProfileList } from '../../services/hooks.js';
 
 const gearpumpAddon = computed(() => machine.value.capabilities.gearpumpAddon);
+
+// Mirrors CloudSyncPlugin::stateName on the firmware side.
+const CLOUD_SYNC_STATE_LABELS = {
+  starting: msg`Starting`,
+  not_configured: msg`Server URL or token missing`,
+  offline: msg`Waiting for Wi-Fi`,
+  waiting_for_clock: msg`Waiting for the clock to sync`,
+  busy: msg`Paused while the machine is busy`,
+  waiting_for_timestamp: msg`Waiting for the clock to correct a shot time`,
+  uploading: msg`Uploading`,
+  idle: msg`Up to date`,
+  retry_scheduled: msg`Server unreachable, retrying`,
+  authentication_failed: msg`Token rejected by the server`,
+};
+
+// Live upload status; only available once the plugin runs (after save and restart).
+function CloudSyncStatus() {
+  const { t, i18n } = useLingui();
+  const apiService = useContext(ApiServiceContext);
+  const [status, setStatus] = useState(null);
+
+  useEffect(() => {
+    apiService
+      .request({ tp: 'req:cloudsync:status' })
+      .then(setStatus)
+      .catch(() => setStatus(null));
+  }, [apiService]);
+
+  if (!status) {
+    return null;
+  }
+  const stateLabel = CLOUD_SYNC_STATE_LABELS[status.state];
+  const lastSuccess = status.lastSuccessAt
+    ? new Date(status.lastSuccessAt * 1000).toLocaleString()
+    : t`never`;
+  return (
+    <div className='space-y-1 text-sm'>
+      <div>
+        <span className='font-medium'>
+          <Trans>Status:</Trans>
+        </span>{' '}
+        {stateLabel ? i18n._(stateLabel) : status.state}
+      </div>
+      <div className='opacity-70'>
+        <Trans>
+          Shots waiting: {status.pendingShots} · Last upload: {lastSuccess}
+        </Trans>
+      </div>
+      {status.lastError && (
+        <div className='text-error'>
+          <Trans>
+            Last error: {status.lastError} (HTTP {status.lastHttpStatus})
+          </Trans>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const MAHLKONIG_MIN_RECIPES = 4;
 
@@ -435,6 +494,75 @@ export function PluginCard({
                 trademarks of their respective owners.
               </Trans>
             </div>
+          </div>
+        )}
+      </div>
+
+      <div className='bg-base-200 rounded-lg p-4'>
+        <div className='flex items-center justify-between'>
+          <span className='text-xl font-medium'>
+            <Trans>Cloud Shot Sync</Trans>
+          </span>
+          <input
+            id='cloudSyncActive'
+            name='cloudSyncActive'
+            value='cloudSyncActive'
+            type='checkbox'
+            className='toggle toggle-primary'
+            checked={!!formData.cloudSyncActive}
+            onChange={onChange('cloudSyncActive')}
+            aria-label={t`Enable Cloud Shot Sync`}
+          />
+        </div>
+        {formData.cloudSyncActive && (
+          <div className='border-base-300 mt-4 space-y-4 border-t pt-4'>
+            <p className='text-sm opacity-70'>
+              <Trans>
+                Uploads every new shot, with its notes and brew profile, to your own server once it
+                is saved. Shots recorded before enabling are not uploaded. Brewing is never delayed:
+                uploads wait until the machine is idle and retry when the network returns. Save and
+                restart to apply.
+              </Trans>
+            </p>
+            <div className='form-control'>
+              <label htmlFor='cloudSyncUrl' className='mb-2 block text-sm font-medium'>
+                <Trans>Server URL</Trans>
+              </label>
+              <input
+                id='cloudSyncUrl'
+                name='cloudSyncUrl'
+                type='url'
+                className='input input-bordered w-full'
+                placeholder='https://example.workers.dev'
+                value={formData.cloudSyncUrl}
+                onChange={onChange('cloudSyncUrl')}
+              />
+            </div>
+            <div className='form-control'>
+              <label htmlFor='cloudSyncToken' className='mb-2 block text-sm font-medium'>
+                <Trans>Device token</Trans>
+              </label>
+              <input
+                id='cloudSyncToken'
+                name='cloudSyncToken'
+                type='password'
+                autoComplete='off'
+                className='input input-bordered w-full'
+                placeholder={
+                  formData.cloudSyncTokenConfigured
+                    ? t`Configured. Leave blank to keep it`
+                    : t`Paste the token from provisioning`
+                }
+                value={formData.cloudSyncToken || ''}
+                onChange={onChange('cloudSyncToken')}
+              />
+              <div className='mt-2 text-sm opacity-70'>
+                <Trans>
+                  The token is stored on the machine and never shown again, not even here.
+                </Trans>
+              </div>
+            </div>
+            <CloudSyncStatus />
           </div>
         )}
       </div>

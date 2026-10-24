@@ -179,6 +179,24 @@ void Settings::setMahlkonigActive(bool mahlkonig_active) { mahlkonigActive.set(m
 
 void Settings::setMahlkonigRecipeProfiles(String profiles) { mahlkonigRecipeProfiles.set(profiles); }
 
+void Settings::setCloudSyncActive(bool active) { cloudSyncActive.set(active); }
+
+void Settings::setCloudSyncUrl(const String &url) {
+    String trimmed = url;
+    trimmed.trim();
+    // Routes are appended as "/v1/...", so a trailing slash would produce "//v1".
+    while (trimmed.endsWith("/")) {
+        trimmed.remove(trimmed.length() - 1);
+    }
+    cloudSyncUrl.set(trimmed);
+}
+
+void Settings::setCloudSyncToken(const String &token) {
+    String trimmed = token;
+    trimmed.trim();
+    cloudSyncToken.set(trimmed);
+}
+
 void Settings::setSmartGrindIp(String smart_grind_ip) { smartGrindIp.set(smart_grind_ip); }
 
 void Settings::setSmartGrindMode(int smart_grind_mode) { smartGrindMode.set(smart_grind_mode); }

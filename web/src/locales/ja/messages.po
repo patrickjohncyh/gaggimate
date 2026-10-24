@@ -803,6 +803,10 @@ msgstr "閉"
 msgid "closed, code {code}"
 msgstr "切断（コード {code}）"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Cloud Shot Sync"
+msgstr ""
+
 #: src/pages/Statistics/components/StatisticsMultiSelectDropdown.jsx
 msgid "Cmd/Ctrl = Add"
 msgstr "Cmd/Ctrl = 追加"
@@ -899,6 +903,10 @@ msgstr "取得とフィルタリングを設定してから、各ロードセル
 #: src/pages/ShotAnalyzer/utils/columns.js
 msgid "Configured Scale Delay (ms)"
 msgstr "設定済みのスケール遅延 (ms)"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Configured. Leave blank to keep it"
+msgstr ""
 
 #: src/components/ConfirmButton.jsx
 #: src/pages/ProfileList/index.jsx
@@ -1288,6 +1296,10 @@ msgstr "{itemName} の選択を解除"
 msgid "Device Settings"
 msgstr "デバイス設定"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Device token"
+msgstr ""
+
 #: src/pages/ShotAnalyzer/components/shotChart/tooltip/StaticTooltipContent.jsx
 #: src/pages/ShotAnalyzer/components/shotChart/tooltip/tooltipModel.js
 msgid "Difference"
@@ -1501,6 +1513,10 @@ msgstr "自動ウェイクアップを有効にする"
 #: src/pages/Settings/PluginCard.jsx
 msgid "Enable Boiler Refill"
 msgstr "ボイラー給水を有効にする"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Enable Cloud Shot Sync"
+msgstr ""
 
 #: src/pages/ShotAnalyzer/components/analyzerActionBar/ActionBarButtons.jsx
 msgid "Enable compare mode"
@@ -2268,6 +2284,12 @@ msgstr "言語"
 msgid "Larger alpha responds faster with less smoothing; smaller alpha is smoother but slower."
 msgstr "alpha が大きいほど反応が速く平滑化は弱くなり、小さいほど滑らかですが反応は遅くなります。"
 
+#. placeholder {0}: status.lastError
+#. placeholder {1}: status.lastHttpStatus
+#: src/pages/Settings/PluginCard.jsx
+msgid "Last error: {0} (HTTP {1})"
+msgstr ""
+
 #: src/pages/DashboardSettings/index.jsx
 msgid "Last Row Fill"
 msgstr "最終行の配置"
@@ -2709,6 +2731,10 @@ msgstr "名前..."
 msgid "Network error: Unable to connect to visualizer.coffee"
 msgstr "ネットワークエラー: visualizer.coffee に接続できません"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "never"
+msgstr ""
+
 #: src/pages/Settings/tabs/CleaningSection.jsx
 msgid "Never"
 msgstr "なし"
@@ -3038,6 +3064,10 @@ msgstr "パスワード"
 msgid "Password"
 msgstr "パスワード"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Paste the token from provisioning"
+msgstr ""
+
 #: src/pages/Home/utils.js
 msgctxt "process action"
 msgid "Pause"
@@ -3046,6 +3076,10 @@ msgstr "一時停止"
 #: src/pages/ShotAnalyzer/components/shotChart/controls/chartReplayControls.jsx
 msgid "Pause replay"
 msgstr "リプレイを一時停止"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Paused while the machine is busy"
+msgstr ""
 
 #: src/pages/ShotAnalyzer/components/shotChart/compare/CompareMetricContent.jsx
 #: src/pages/ShotAnalyzer/components/shotDetails/ShotMetricCards.jsx
@@ -4159,6 +4193,18 @@ msgstr "キャリブレーションプロファイルを選択中..."
 msgid "Server error - the API may not support this data format or account type"
 msgstr "サーバーエラー - API がこのデータ形式またはアカウントの種類に対応していない可能性があります"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Server unreachable, retrying"
+msgstr ""
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Server URL"
+msgstr ""
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Server URL or token missing"
+msgstr ""
+
 #: src/pages/ShotAnalyzer/components/shotDetails/ShotMainInfoCard.jsx
 msgid "Set rating to {value} of 5"
 msgstr "評価を 5 段階中 {value} に設定"
@@ -4344,6 +4390,11 @@ msgstr "ショット（{shotPreviewCount}）"
 #: src/pages/Statistics/components/TrendChart.jsx
 msgid "Shots / {granularityLabel}"
 msgstr "ショット / {granularityLabel}"
+
+#. placeholder {0}: status.pendingShots
+#: src/pages/Settings/PluginCard.jsx
+msgid "Shots waiting: {0} · Last upload: {lastSuccess}"
+msgstr ""
 
 #: src/pages/Statistics/components/TrendChart.jsx
 msgid "Shots: {shotCount}"
@@ -4571,6 +4622,10 @@ msgctxt "column type"
 msgid "Start/End"
 msgstr "開始/終了"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Starting"
+msgstr ""
+
 #: src/components/PumpFlowCalibration/usePumpFlowCalibration.js
 msgid "Starting despite warnings: {warnings}"
 msgstr "警告を無視して開始: {warnings}"
@@ -4601,6 +4656,10 @@ msgstr "統計チャートの平均"
 #: src/pages/Statistics/components/StatisticsSearchHelp.jsx
 msgid "Statistics Search DSL"
 msgstr "統計検索 DSL"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Status:"
+msgstr ""
 
 #: src/pages/Statistics/components/MetricsTable.jsx
 msgid "Std Dev"
@@ -5039,6 +5098,10 @@ msgstr "スケールは見つかりましたが、Bluetooth 接続に失敗し�
 msgid "The scale wasn't found. Make sure it's switched on and nearby, then scan again."
 msgstr "スケールが見つかりませんでした。電源が入っていて近くにあることを確認してから、もう一度スキャンしてください。"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "The token is stored on the machine and never shown again, not even here."
+msgstr ""
+
 #: src/pages/Settings/tabs/SystemTab.jsx
 msgid "The update could not be completed and the device kept its current firmware. Check the network connection and start the update again."
 msgstr "アップデートを完了できず、デバイスは現在のファームウェアのままです。ネットワーク接続を確認して、もう一度アップデートを開始してください。"
@@ -5157,6 +5220,10 @@ msgstr "固定したプロファイルを先頭に表示"
 #: src/pages/ShotAnalyzer/components/library/LibrarySection.jsx
 msgid "Toggle pinned shots first"
 msgstr "固定したショットを先頭に表示"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Token rejected by the server"
+msgstr ""
 
 #: src/pages/ShotAnalyzer/components/analysisTable/AnalysisTable.jsx
 #: src/pages/Statistics/components/PhaseStatistics.jsx
@@ -5318,6 +5385,10 @@ msgstr "フェーズ {phaseNumber} の推定遅延が異常に大きくなって
 msgid "Unusually high inferred delay in Phase {phaseNumber}."
 msgstr "フェーズ {phaseNumber} の推定遅延が異常に大きくなっています。"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Up to date"
+msgstr ""
+
 #: src/pages/Settings/tabs/SystemTab.jsx
 msgid "Update both"
 msgstr "両方を更新"
@@ -5388,9 +5459,17 @@ msgstr "visualizer.coffee にアップロード"
 msgid "Upload to Visualizer.coffee"
 msgstr "Visualizer.coffee にアップロード"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Uploading"
+msgstr ""
+
 #: src/components/VisualizerUploadModal.jsx
 msgid "Uploading..."
 msgstr "アップロード中..."
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Uploads every new shot, with its notes and brew profile, to your own server once it is saved. Shots recorded before enabling are not uploaded. Brewing is never delayed: uploads wait until the machine is idle and retry when the network returns. Save and restart to apply."
+msgstr ""
 
 #: src/pages/Settings/tabs/CalibrationTab.jsx
 msgid "Upper bound on the identification test. Most espresso boilers resolve within 60–120 s. Extend if Autotune fails before peak slope is detected."
@@ -5548,6 +5627,18 @@ msgstr "水"
 msgctxt "weekday initial: Wednesday"
 msgid "W"
 msgstr "水"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Waiting for the clock to correct a shot time"
+msgstr ""
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Waiting for the clock to sync"
+msgstr ""
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Waiting for Wi-Fi"
+msgstr ""
 
 #: src/pages/Settings/PluginCard.jsx
 msgid "Warm-up time (minutes, 0 = boiler only)"

@@ -3,9 +3,11 @@
 
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <atomic>
 #include <display/core/Plugin.h>
 #include <display/core/utils.h>
 #include <display/models/shot_log_format.h>
+#include <vector>
 
 constexpr size_t SHOT_HISTORY_INTERVAL = 100;
 constexpr size_t MIN_FREE_SPACE_BYTES = 500 * 1024;         // 500 KB reserved free space
@@ -27,6 +29,7 @@ class ShotHistoryPlugin : public Plugin {
     // Index management methods
     bool appendToIndex(const ShotIndexEntry &entry);
     void updateIndexMetadata(uint32_t shotId, uint8_t rating, uint16_t volume);
+    void updateIndexTimestamp(uint32_t shotId, uint32_t startEpoch);
     void markIndexDeleted(uint32_t shotId);
     void rebuildIndex();
     void startAsyncRebuild();
@@ -35,6 +38,14 @@ class ShotHistoryPlugin : public Plugin {
     // Read up to maxCount most recent non-deleted index entries, newest first.
     // Returns the number of entries written to outEntries.
     size_t readRecentEntries(ShotIndexEntry *outEntries, size_t maxCount);
+
+    /**
+     * Whether a saved shot still has an untrusted start time that will be corrected once SNTP
+     * syncs. Safe to call from any task.
+     *
+     * Example: if (epoch < cloudsync::MIN_TRUSTED_EPOCH && ShotHistory.hasPendingTimestamps()) { retryLater(); }
+     */
+    bool hasPendingTimestamps() const { return hasPendingTimestampFixes.load(std::memory_order_acquire); }
 
   private:
     // Index helper functions
@@ -46,6 +57,8 @@ class ShotHistoryPlugin : public Plugin {
     void loadNotes(const String &id, JsonDocument &notes);
     String resolveNotesPath(uint32_t id);
     void startRecording();
+    void queueTimestampFix(uint32_t shotId);
+    void applyPendingTimestampFixes();
 
     uint16_t getSystemInfo(); // Helper to pack system state bits
 
@@ -90,6 +103,16 @@ class ShotHistoryPlugin : public Plugin {
     float currentPuckResistance = 0.0f;
     float maxRecordedWeight = 0.0f;
     String currentProfileName;
+
+    // A shot started before SNTP synced carries a boot-relative startEpoch. Its millis() start is
+    // kept so the time can be corrected once the clock is trusted (lost on reboot).
+    struct PendingTimestampFix {
+        uint32_t shotId;
+        uint32_t startMillis;
+    };
+    bool isStartEpochTrusted = false;
+    std::vector<PendingTimestampFix> pendingTimestampFixes; // ShotHistory task only
+    std::atomic<bool> hasPendingTimestampFixes{false};
 
     // Phase transition tracking (v5+)
     uint8_t lastRecordedPhase = 0xFF; // Invalid initial value to detect first phase
