@@ -803,6 +803,10 @@ msgstr "Geschlossen"
 msgid "closed, code {code}"
 msgstr "geschlossen, Code {code}"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Cloud Shot Sync"
+msgstr ""
+
 #: src/pages/Statistics/components/StatisticsMultiSelectDropdown.jsx
 msgid "Cmd/Ctrl = Add"
 msgstr "Cmd/Strg = Hinzufügen"
@@ -899,6 +903,10 @@ msgstr "Konfiguriere Erfassung und Filterung, dann tariere und kalibriere jede W
 #: src/pages/ShotAnalyzer/utils/columns.js
 msgid "Configured Scale Delay (ms)"
 msgstr "Konfigurierte Waagenverzögerung (ms)"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Configured. Leave blank to keep it"
+msgstr ""
 
 #: src/components/ConfirmButton.jsx
 #: src/pages/ProfileList/index.jsx
@@ -1288,6 +1296,10 @@ msgstr "{itemName} abwählen"
 msgid "Device Settings"
 msgstr "Geräteeinstellungen"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Device token"
+msgstr ""
+
 #: src/pages/ShotAnalyzer/components/shotChart/tooltip/StaticTooltipContent.jsx
 #: src/pages/ShotAnalyzer/components/shotChart/tooltip/tooltipModel.js
 msgid "Difference"
@@ -1501,6 +1513,10 @@ msgstr "Automatisches Aufwecken aktivieren"
 #: src/pages/Settings/PluginCard.jsx
 msgid "Enable Boiler Refill"
 msgstr "Boiler-Nachfüllung aktivieren"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Enable Cloud Shot Sync"
+msgstr ""
 
 #: src/pages/ShotAnalyzer/components/analyzerActionBar/ActionBarButtons.jsx
 msgid "Enable compare mode"
@@ -2268,6 +2284,12 @@ msgstr "Sprache"
 msgid "Larger alpha responds faster with less smoothing; smaller alpha is smoother but slower."
 msgstr "Ein größeres Alpha reagiert schneller mit weniger Glättung; ein kleineres Alpha glättet stärker, ist aber langsamer."
 
+#. placeholder {0}: status.lastError
+#. placeholder {1}: status.lastHttpStatus
+#: src/pages/Settings/PluginCard.jsx
+msgid "Last error: {0} (HTTP {1})"
+msgstr ""
+
 #: src/pages/DashboardSettings/index.jsx
 msgid "Last Row Fill"
 msgstr "Füllung der letzten Zeile"
@@ -2709,6 +2731,10 @@ msgstr "Name..."
 msgid "Network error: Unable to connect to visualizer.coffee"
 msgstr "Netzwerkfehler: Verbindung zu visualizer.coffee nicht möglich"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "never"
+msgstr ""
+
 #: src/pages/Settings/tabs/CleaningSection.jsx
 msgid "Never"
 msgstr "Nie"
@@ -3038,6 +3064,10 @@ msgstr "Passwort"
 msgid "Password"
 msgstr "Passwort"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Paste the token from provisioning"
+msgstr ""
+
 #: src/pages/Home/utils.js
 msgctxt "process action"
 msgid "Pause"
@@ -3046,6 +3076,10 @@ msgstr "Pausieren"
 #: src/pages/ShotAnalyzer/components/shotChart/controls/chartReplayControls.jsx
 msgid "Pause replay"
 msgstr "Replay pausieren"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Paused while the machine is busy"
+msgstr ""
 
 #: src/pages/ShotAnalyzer/components/shotChart/compare/CompareMetricContent.jsx
 #: src/pages/ShotAnalyzer/components/shotDetails/ShotMetricCards.jsx
@@ -4159,6 +4193,18 @@ msgstr "Kalibrierprofil wird ausgewählt..."
 msgid "Server error - the API may not support this data format or account type"
 msgstr "Serverfehler – die API unterstützt dieses Datenformat oder diesen Kontotyp möglicherweise nicht"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Server unreachable, retrying"
+msgstr ""
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Server URL"
+msgstr ""
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Server URL or token missing"
+msgstr ""
+
 #: src/pages/ShotAnalyzer/components/shotDetails/ShotMainInfoCard.jsx
 msgid "Set rating to {value} of 5"
 msgstr "Bewertung auf {value} von 5 setzen"
@@ -4344,6 +4390,11 @@ msgstr "Shots ({shotPreviewCount})"
 #: src/pages/Statistics/components/TrendChart.jsx
 msgid "Shots / {granularityLabel}"
 msgstr "Shots / {granularityLabel}"
+
+#. placeholder {0}: status.pendingShots
+#: src/pages/Settings/PluginCard.jsx
+msgid "Shots waiting: {0} · Last upload: {lastSuccess}"
+msgstr ""
 
 #: src/pages/Statistics/components/TrendChart.jsx
 msgid "Shots: {shotCount}"
@@ -4571,6 +4622,10 @@ msgctxt "column type"
 msgid "Start/End"
 msgstr "Start/Ende"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Starting"
+msgstr ""
+
 #: src/components/PumpFlowCalibration/usePumpFlowCalibration.js
 msgid "Starting despite warnings: {warnings}"
 msgstr "Start trotz Warnungen: {warnings}"
@@ -4601,6 +4656,10 @@ msgstr "Durchschnittswerte der Statistikdiagramme"
 #: src/pages/Statistics/components/StatisticsSearchHelp.jsx
 msgid "Statistics Search DSL"
 msgstr "Statistik-Such-DSL"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Status:"
+msgstr ""
 
 #: src/pages/Statistics/components/MetricsTable.jsx
 msgid "Std Dev"
@@ -5039,6 +5098,10 @@ msgstr "Die Waage wurde gefunden, aber die Bluetooth-Verbindung ist fehlgeschlag
 msgid "The scale wasn't found. Make sure it's switched on and nearby, then scan again."
 msgstr "Die Waage wurde nicht gefunden. Stelle sicher, dass sie eingeschaltet und in der Nähe ist, und suche dann erneut."
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "The token is stored on the machine and never shown again, not even here."
+msgstr ""
+
 #: src/pages/Settings/tabs/SystemTab.jsx
 msgid "The update could not be completed and the device kept its current firmware. Check the network connection and start the update again."
 msgstr "Das Update konnte nicht abgeschlossen werden; das Gerät behält seine aktuelle Firmware. Prüfe die Netzwerkverbindung und starte das Update erneut."
@@ -5157,6 +5220,10 @@ msgstr "Angeheftete Profile zuerst umschalten"
 #: src/pages/ShotAnalyzer/components/library/LibrarySection.jsx
 msgid "Toggle pinned shots first"
 msgstr "Angeheftete Shots zuerst umschalten"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Token rejected by the server"
+msgstr ""
 
 #: src/pages/ShotAnalyzer/components/analysisTable/AnalysisTable.jsx
 #: src/pages/Statistics/components/PhaseStatistics.jsx
@@ -5318,6 +5385,10 @@ msgstr "Ungewöhnlich hohe ermittelte Verzögerung in Phase {phaseNumber} ({dela
 msgid "Unusually high inferred delay in Phase {phaseNumber}."
 msgstr "Ungewöhnlich hohe ermittelte Verzögerung in Phase {phaseNumber}."
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Up to date"
+msgstr ""
+
 #: src/pages/Settings/tabs/SystemTab.jsx
 msgid "Update both"
 msgstr "Beide aktualisieren"
@@ -5388,9 +5459,17 @@ msgstr "Zu visualizer.coffee hochladen"
 msgid "Upload to Visualizer.coffee"
 msgstr "Zu Visualizer.coffee hochladen"
 
+#: src/pages/Settings/PluginCard.jsx
+msgid "Uploading"
+msgstr ""
+
 #: src/components/VisualizerUploadModal.jsx
 msgid "Uploading..."
 msgstr "Lädt hoch..."
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Uploads every new shot, with its notes and brew profile, to your own server once it is saved. Shots recorded before enabling are not uploaded. Brewing is never delayed: uploads wait until the machine is idle and retry when the network returns. Save and restart to apply."
+msgstr ""
 
 #: src/pages/Settings/tabs/CalibrationTab.jsx
 msgid "Upper bound on the identification test. Most espresso boilers resolve within 60–120 s. Extend if Autotune fails before peak slope is detected."
@@ -5548,6 +5627,18 @@ msgstr "M"
 msgctxt "weekday initial: Wednesday"
 msgid "W"
 msgstr "M"
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Waiting for the clock to correct a shot time"
+msgstr ""
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Waiting for the clock to sync"
+msgstr ""
+
+#: src/pages/Settings/PluginCard.jsx
+msgid "Waiting for Wi-Fi"
+msgstr ""
 
 #: src/pages/Settings/PluginCard.jsx
 msgid "Warm-up time (minutes, 0 = boiler only)"

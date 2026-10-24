@@ -3,11 +3,14 @@
 #include <LittleFS.h>
 #include <SD_MMC.h>
 #include <cmath>
+#include <cstddef>
 #include <display/core/Controller.h>
 #include <display/core/ProfileManager.h>
+#include <display/core/TimeSync.h>
 #include <display/core/process/BrewProcess.h>
 #include <display/core/utils.h>
 #include <display/models/shot_log_format.h>
+#include <display/plugins/cloudsync/CloudSyncLogic.h>
 #include <display/util/FsUtil.h>
 #include <display/util/PsramAllocator.h>
 
@@ -81,6 +84,9 @@ String padId(String id, int length = 6) {
 // Notes sit next to their .slog under the same padded id
 String notesPath(uint32_t id) { return "/h/" + padId(String(id)) + ".json"; }
 
+// Bounds the memory held for shots awaiting a clock sync; beyond this the oldest lose their fix.
+constexpr size_t MAX_PENDING_TIMESTAMP_FIXES = 32;
+
 // Firmware since the shot index (#449) keyed notes by the unpadded id the web UI sends
 String legacyNotesPath(uint32_t id) { return "/h/" + String(id) + ".json"; }
 } // namespace
@@ -149,6 +155,7 @@ void ShotHistoryPlugin::record() {
                 header.sampleInterval = SHOT_LOG_SAMPLE_INTERVAL_MS;
                 header.fieldsMask = SHOT_LOG_FIELDS_MASK_ALL;
                 header.startEpoch = getTime();
+                isStartEpochTrusted = TimeSync::isClockTrusted();
                 Profile profile = controller->getProfileManager()->getSelectedProfile();
                 strncpy(header.profileId, profile.id.c_str(), sizeof(header.profileId) - 1);
                 header.profileId[sizeof(header.profileId) - 1] = '\0';
@@ -282,6 +289,11 @@ void ShotHistoryPlugin::record() {
         header.finalExitReason = finalExitReason; // why the shot ended (last phase exit or manual abort)
         float finalWeight = maxRecordedWeight;
         header.finalWeight = finalWeight > 0.0f ? encodeUnsigned(finalWeight, WEIGHT_SCALE, WEIGHT_MAX_VALUE) : 0;
+        if (!isStartEpochTrusted && TimeSync::isClockTrusted()) {
+            // The clock synced mid-shot: derive the real start from the monotonic shot timer.
+            header.startEpoch = cloudsync::correctedStartEpoch(TimeSync::trustedNow(), millis(), shotStart);
+            isStartEpochTrusted = true;
+        }
         currentFile.seek(0, SeekSet);
         currentFile.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header));
         currentFile.close();
@@ -291,6 +303,10 @@ void ShotHistoryPlugin::record() {
         if (duration <= 7500) { // Exclude failed shots and flushes
             fs->remove("/h/" + currentId + ".slog");
         } else {
+            if (!isStartEpochTrusted) {
+                // Queued before the id is published so CloudSync never sees the shot without the fix pending.
+                queueTimestampFix(currentId.toInt());
+            }
             controller->getSettings().setHistoryIndex(controller->getSettings().getHistoryIndex() + 1);
             cleanupHistory();
 
@@ -388,6 +404,56 @@ unsigned long ShotHistoryPlugin::getTime() {
     time_t now;
     time(&now);
     return now;
+}
+
+void ShotHistoryPlugin::queueTimestampFix(uint32_t shotId) {
+    if (pendingTimestampFixes.size() >= MAX_PENDING_TIMESTAMP_FIXES) {
+        ESP_LOGW("ShotHistoryPlugin", "Dropping timestamp fix for shot %u: %u shots already wait for a clock sync",
+                 pendingTimestampFixes.front().shotId, static_cast<unsigned>(pendingTimestampFixes.size()));
+        pendingTimestampFixes.erase(pendingTimestampFixes.begin());
+    }
+    pendingTimestampFixes.push_back({shotId, static_cast<uint32_t>(shotStart)});
+    hasPendingTimestampFixes.store(true, std::memory_order_release);
+    ESP_LOGI("ShotHistoryPlugin", "Shot %u saved before the clock synced; its start time will be corrected", shotId);
+}
+
+// Rewrites the start time of shots saved before SNTP synced. Runs on the ShotHistory task between
+// shots, so it never races the recording file.
+void ShotHistoryPlugin::applyPendingTimestampFixes() {
+    if (pendingTimestampFixes.empty() || recording || extendedRecording || isFileOpen || !TimeSync::isClockTrusted()) {
+        return;
+    }
+    const uint32_t nowEpoch = TimeSync::trustedNow();
+    const uint32_t nowMillis = millis();
+    for (const PendingTimestampFix &fix : pendingTimestampFixes) {
+        const uint32_t startEpoch = cloudsync::correctedStartEpoch(nowEpoch, nowMillis, fix.startMillis);
+        File shotFile = fs->open("/h/" + padId(String(fix.shotId)) + ".slog", "r+");
+        if (!shotFile) {
+            ESP_LOGW("ShotHistoryPlugin", "Shot %u vanished before its start time could be corrected", fix.shotId);
+            continue;
+        }
+        uint32_t magic = 0;
+        const bool isShotLog =
+            shotFile.read(reinterpret_cast<uint8_t *>(&magic), sizeof(magic)) == sizeof(magic) && magic == SHOT_LOG_MAGIC;
+        const bool isWritten =
+            isShotLog && shotFile.seek(offsetof(ShotLogHeader, startEpoch), SeekSet) &&
+            shotFile.write(reinterpret_cast<const uint8_t *>(&startEpoch), sizeof(startEpoch)) == sizeof(startEpoch);
+        shotFile.close();
+        if (!isWritten) {
+            ESP_LOGE("ShotHistoryPlugin", "Failed to correct the start time of shot %u (shot log header %s)", fix.shotId,
+                     isShotLog ? "not writable" : "invalid");
+            continue;
+        }
+        updateIndexTimestamp(fix.shotId, startEpoch);
+        ESP_LOGI("ShotHistoryPlugin", "Corrected start time of shot %u to %u", fix.shotId, startEpoch);
+
+        Event savedEvent; // the dashboard and CloudSync re-read the shot
+        savedEvent.id = "evt:history-shot-saved";
+        savedEvent.setInt("id", static_cast<int>(fix.shotId));
+        pluginManager->trigger(savedEvent);
+    }
+    pendingTimestampFixes.clear();
+    hasPendingTimestampFixes.store(false, std::memory_order_release);
 }
 
 void ShotHistoryPlugin::endRecording() {
@@ -637,6 +703,13 @@ void ShotHistoryPlugin::handleRequest(JsonDocument &request, JsonDocument &respo
         // Always use updateIndexMetadata - it handles both rating and optional volume
         updateIndexMetadata(id.toInt(), rating, volume);
 
+        if (pluginManager) {
+            Event notesEvent;
+            notesEvent.id = "history:notes:saved";
+            notesEvent.setInt("id", id.toInt());
+            pluginManager->trigger(notesEvent);
+        }
+
         response["msg"] = "Ok";
     } else if (type == "req:history:rebuild") {
         // Rebuild is now handled asynchronously by WebUIPlugin
@@ -683,6 +756,7 @@ void ShotHistoryPlugin::loopTask(void *arg) {
     const TickType_t interval = pdMS_TO_TICKS(SHOT_LOG_SAMPLE_INTERVAL_MS);
     while (true) {
         plugin->record();
+        plugin->applyPendingTimestampFixes();
 
         // If record() ran past the next deadline, the measurements that should
         // have occurred during that gap cannot be recovered. Rebase the cadence
@@ -829,6 +903,29 @@ void ShotHistoryPlugin::updateIndexMetadata(uint32_t shotId, uint8_t rating, uin
         ESP_LOGW("ShotHistoryPlugin", "Shot %u not found in index for metadata update", shotId);
     }
 
+    indexFile.close();
+}
+
+void ShotHistoryPlugin::updateIndexTimestamp(uint32_t shotId, uint32_t startEpoch) {
+    File indexFile = fs->open("/h/index.bin", "r+");
+    if (!indexFile) {
+        ESP_LOGE("ShotHistoryPlugin", "Failed to open index file for timestamp update of shot %u", shotId);
+        return;
+    }
+
+    ShotIndexHeader header{};
+    if (readIndexHeader(indexFile, header)) {
+        int entryPos = findEntryPosition(indexFile, header, shotId);
+        ShotIndexEntry entry{};
+        if (entryPos >= 0 && readEntryAtPosition(indexFile, entryPos, entry)) {
+            entry.timestamp = startEpoch;
+            if (!writeEntryAtPosition(indexFile, entryPos, entry)) {
+                ESP_LOGE("ShotHistoryPlugin", "Failed to write corrected timestamp for shot %u", shotId);
+            }
+        } else {
+            ESP_LOGW("ShotHistoryPlugin", "Shot %u not found in index for timestamp update", shotId);
+        }
+    }
     indexFile.close();
 }
 

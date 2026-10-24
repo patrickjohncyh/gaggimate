@@ -117,6 +117,10 @@ class Settings {
     bool isSmartGrindActive() const { return smartGrindActive.get(); }
     bool isMahlkonigActive() const { return mahlkonigActive.get(); }
     String getMahlkonigRecipeProfiles() const { return mahlkonigRecipeProfiles.get(); }
+    bool isCloudSyncActive() const { return cloudSyncActive.get(); }
+    String getCloudSyncUrl() const { return cloudSyncUrl.get(); }
+    // Device bearer token; never return it over the API (see WebUIPlugin::handleSettings).
+    String getCloudSyncToken() const { return cloudSyncToken.get(); }
     int getSmartGrindMode() const { return smartGrindMode.get(); }
     String getSmartGrindIp() const { return smartGrindIp.get(); }
     bool isHomeAssistant() const { return homeAssistant.get(); }
@@ -232,6 +236,9 @@ class Settings {
     void setSmartGrindActive(bool smart_grind_active);
     void setMahlkonigActive(bool mahlkonig_active);
     void setMahlkonigRecipeProfiles(String profiles);
+    void setCloudSyncActive(bool active);
+    void setCloudSyncUrl(const String &url);
+    void setCloudSyncToken(const String &token);
     void setSmartGrindIp(String smart_grind_ip);
     void setSmartGrindMode(int smart_grind_mode);
     void setHomeAssistant(bool homeAssistant);
@@ -346,6 +353,9 @@ class Settings {
     Property<String> smartGrindIp{registry, "sg_i", ""};
     Property<bool> mahlkonigActive{registry, "mk_a", false};
     Property<String> mahlkonigRecipeProfiles{registry, "mk_rp", ""}; // profile id per grinder recipe slot, "r1,r2,..."
+    Property<bool> cloudSyncActive{registry, "cs_a", false};
+    Property<String> cloudSyncUrl{registry, "cs_url", ""};
+    Property<String> cloudSyncToken{registry, "cs_tok", ""};
     Property<bool> homeAssistant{registry, "ha_a", false};
     Property<String> homeAssistantUser{registry, "ha_u", ""};
     Property<String> homeAssistantPassword{registry, "ha_pw", ""};

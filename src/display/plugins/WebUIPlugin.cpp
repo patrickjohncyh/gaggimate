@@ -395,6 +395,13 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
                 settings->setMahlkonigActive(parseBoolArg(request->arg("mahlkonigActive")));
             if (request->hasArg("mahlkonigRecipeProfiles"))
                 settings->setMahlkonigRecipeProfiles(request->arg("mahlkonigRecipeProfiles"));
+            if (request->hasArg("cloudSyncActive"))
+                settings->setCloudSyncActive(parseBoolArg(request->arg("cloudSyncActive")));
+            if (request->hasArg("cloudSyncUrl"))
+                settings->setCloudSyncUrl(request->arg("cloudSyncUrl"));
+            // The token is write-only: the form never holds the stored value, so blank means "keep".
+            if (request->hasArg("cloudSyncToken") && !request->arg("cloudSyncToken").isEmpty())
+                settings->setCloudSyncToken(request->arg("cloudSyncToken"));
             if (request->hasArg("homeAssistant"))
                 settings->setHomeAssistant(parseBoolArg(request->arg("homeAssistant")));
             if (request->hasArg("haUser"))
@@ -586,6 +593,9 @@ void WebUIPlugin::handleSettings(AsyncWebServerRequest *request) const {
     doc["smartGrindMode"] = settings.getSmartGrindMode();
     doc["mahlkonigActive"] = settings.isMahlkonigActive();
     doc["mahlkonigRecipeProfiles"] = settings.getMahlkonigRecipeProfiles();
+    doc["cloudSyncActive"] = settings.isCloudSyncActive();
+    doc["cloudSyncUrl"] = settings.getCloudSyncUrl();
+    doc["cloudSyncTokenConfigured"] = !settings.getCloudSyncToken().isEmpty();
     doc["deviceIp"] = apMode ? WIFI_AP_IP.toString() : WiFi.localIP().toString(); // read-only, for plugin setup hints
     doc["momentaryButtons"] = settings.isMomentaryButtons();
     doc["flushDuration"] = settings.getFlushDuration();
